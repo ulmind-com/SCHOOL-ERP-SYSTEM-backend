@@ -82,8 +82,27 @@ async def seed_dedicated_tenant() -> dict | None:
     }
 
 
+async def sync_roles_everywhere() -> dict:
+    """Bring every institution's untouched built-in roles up to the current
+    presets. Runs on boot because a permission we have since decided is wrong
+    otherwise stays granted at every school already using the product."""
+    from app.core.tenancy import build_context
+    from app.db.mongo import C, collection
+    from app.modules.users.service import sync_builtin_roles
+
+    updated, institutions = 0, 0
+    async for doc in collection(C.TENANTS).find({"is_deleted": {"$ne": True}}):
+        result = await sync_builtin_roles(build_context(doc))
+        if result["roles_updated"]:
+            institutions += 1
+            updated += result["roles_updated"]
+    return {"institutions": institutions, "roles_updated": updated}
+
+
 async def run() -> dict:
     plans = await seed_plans()
     owner = await seed_platform_owner()
     dedicated = await seed_dedicated_tenant()
-    return {"plans_seeded": plans, "platform_owner": owner, "dedicated_tenant": dedicated}
+    roles = await sync_roles_everywhere()
+    return {"plans_seeded": plans, "platform_owner": owner,
+            "dedicated_tenant": dedicated, "roles": roles}

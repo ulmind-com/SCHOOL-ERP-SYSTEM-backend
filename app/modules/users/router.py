@@ -206,6 +206,19 @@ async def resend_invite(user_id: str, auth: UserEditor, tenant: TenantDep, reque
 
 
 # ── Roles ─────────────────────────────────────────────────────────────────
+@router.post("/roles/sync", summary="Bring untouched built-in roles up to date")
+async def sync_roles(auth: RoleEditor, tenant: TenantDep, request: Request):
+    """Roles are documents per institution, so a preset corrected in a release
+    never reaches the schools already running — including when the correction
+    was a permission that should not have been granted. Roles the institution
+    has edited are left alone."""
+    result = await service.sync_builtin_roles(tenant)
+    if result["roles_updated"]:
+        await record(auth, "roles.synced", entity_type="roles",
+                     changes=result, request=request)
+    return result
+
+
 @router.get("/roles", summary="List roles")
 async def list_roles(auth: RoleReader, tenant: TenantDep):
     return await service.list_roles(tenant)

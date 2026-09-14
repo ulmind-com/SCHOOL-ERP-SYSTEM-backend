@@ -36,6 +36,9 @@ class Role(TenantDocument):
     #: Seeded roles cannot be deleted, only edited (except the owner role).
     is_system: bool = False
     is_owner: bool = False
+    #: Set the first time an institution edits a seeded role. After that we stop
+    #: reconciling it with the preset — their decision outranks ours.
+    is_customised: bool = False
     user_count: int = 0
 
 

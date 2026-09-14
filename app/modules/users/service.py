@@ -364,6 +364,10 @@ async def update_role(
     payload = {k: v for k, v in data.items()
                if k in {"name", "description", "permissions", "portal"} and v is not None}
     payload["updated_at"] = utcnow()
+    # From here on this role is theirs: reconciliation with the shipped preset
+    # stops, because their decision outranks ours.
+    if "permissions" in payload:
+        payload["is_customised"] = True
     doc = await collection(C.ROLES).find_one_and_update(
         {"_id": _id}, {"$set": payload}, return_document=True
     )
@@ -580,3 +584,41 @@ async def send_credentials(
             else "No email provider is configured, so share the temporary password yourself."
         ),
     }
+
+
+async def sync_builtin_roles(tenant: TenantContext) -> dict[str, Any]:
+    """Bring untouched built-in roles back in line with the shipped presets.
+
+    A role is a document per institution, so a preset fixed in a release never
+    reaches the schools already using it — including when what we fixed was a
+    permission that should never have been granted. This closes that gap, and
+    leaves alone any role the institution has edited.
+    """
+    from app.core.permissions import ROLE_PRESETS_BY_KEY
+
+    changed: list[dict[str, Any]] = []
+    async for role in collection(C.ROLES).find(
+        {"tenant_id": tenant.id, "is_system": True, "is_deleted": {"$ne": True}}
+    ):
+        if role.get("is_owner") or role.get("is_customised"):
+            continue
+        preset = ROLE_PRESETS_BY_KEY.get(role.get("key", ""))
+        if preset is None:
+            continue
+        # Compared as written, not expanded: that is the shape they are seeded
+        # in, and an expanded list would differ on every run.
+        wanted = sorted(set(preset.permissions))
+        current = sorted(set(role.get("permissions") or []))
+        if wanted == current:
+            continue
+        await collection(C.ROLES).update_one(
+            {"_id": role["_id"]},
+            {"$set": {"permissions": wanted, "portal": preset.portal,
+                      "updated_at": utcnow()}},
+        )
+        changed.append({
+            "key": role["key"],
+            "removed": sorted(set(current) - set(wanted)),
+            "added": sorted(set(wanted) - set(current)),
+        })
+    return {"roles_updated": len(changed), "changes": changed}
