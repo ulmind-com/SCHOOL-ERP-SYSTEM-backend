@@ -1,4 +1,8 @@
-uv.lock linguist-generated=true -diff
+# Collapse the lockfile in GitHub diffs and keep it out of language stats, but
+# leave it a normal text file to git — marking it `-diff` makes it binary, which
+# costs delta compression and makes a merge conflict unresolvable by hand.
+uv.lock linguist-generated=true
+
 * text=auto eol=lf
 *.ttf binary
 *.otf binary
