@@ -1,0 +1,103 @@
+# Render blueprint — Scholarly ERP API.
+#
+# The web app lives in its own repository, so the two services cannot reference
+# each other automatically. CORS_ORIGINS must be set by hand to the web app's
+# URL once it is deployed.
+#
+# For a dedicated institution: copy this into its own Render project, set
+# DEPLOYMENT_MODE=dedicated and point MONGODB_URI at that institution's own
+# cluster. The code is identical.
+
+services:
+  - type: web
+    name: scholarly-api
+    runtime: python
+    plan: starter
+    region: singapore           # closest to Indian institutions
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DEPLOYMENT_MODE
+        value: saas             # "dedicated" on a single-institution deployment
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: APP_NAME
+        value: Scholarly
+      - key: API_V1_PREFIX
+        value: /api/v1
+      - key: SECRET_KEY
+        generateValue: true     # Render mints this; never commit one
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "30"
+
+      # ── Set these in the dashboard ──────────────────────────────
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: scholarly
+      # The web app's URL, e.g. https://scholarly-web.onrender.com
+      # Without this the browser's requests are blocked by CORS.
+      - key: CORS_ORIGINS
+        sync: false
+      - key: TENANT_BASE_DOMAIN
+        sync: false
+      - key: IMAGEKIT_PUBLIC_KEY
+        sync: false
+      - key: IMAGEKIT_PRIVATE_KEY
+        sync: false
+      - key: IMAGEKIT_URL_ENDPOINT
+        sync: false
+      - key: IMAGEKIT_ID
+        sync: false
+      - key: PLATFORM_OWNER_EMAIL
+        sync: false
+      - key: PLATFORM_OWNER_PASSWORD
+        sync: false
+      - key: PLATFORM_OWNER_NAME
+        value: Platform Owner
+
+      # ── Optional integrations ──────────────────────────────────
+      # Safe to leave unset: each feature reports itself as not
+      # configured rather than failing.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMS_API_URL
+        sync: false
+      - key: SMS_API_KEY
+        sync: false
+      - key: SMS_SENDER_ID
+        sync: false
+      - key: FCM_SERVER_KEY
+        sync: false
+      - key: WHATSAPP_API_URL
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5
+      - key: BIOMETRIC_DEVICE_KEY
+        generateValue: true

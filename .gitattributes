@@ -1,0 +1,5 @@
+uv.lock linguist-generated=true -diff
+* text=auto eol=lf
+*.ttf binary
+*.otf binary
+*.pdf binary
