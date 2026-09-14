@@ -48,6 +48,11 @@ def period_label_for(cycle: str, on: date, index: int | None = None) -> str:
         return f"Semester {index or (1 if on.month <= 6 else 2)} · {on.year}"
     if cycle == "one_time":
         return f"One-time charges · {on.year}"
+    if cycle == "yearly":
+        return f"Yearly charges · {on.year}"
+    # "all" — one invoice covering every component in the structure. Kept
+    # distinct from the yearly label, or a yearly run and an everything run on
+    # the same day would collide and the second would silently skip everyone.
     return f"Full Year {on.year}"
 
 

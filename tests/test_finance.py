@@ -162,10 +162,16 @@ class TestBillingCycles:
         assert period_label_for("semester", date(2026, 9, 14)) == "Semester 2 · 2026"
         assert period_label_for("semester", date(2026, 3, 1), 1) == "Semester 1 · 2026"
 
-    def test_yearly_run_and_monthly_run_get_different_labels(self):
-        """Two runs on the same day must not collide on the skip check."""
+    def test_every_cycle_gets_its_own_label_on_the_same_day(self):
+        """Two runs on the same day must not collide on the skip check —
+        a colliding label makes the second run silently bill nobody."""
         on = date(2026, 4, 2)
-        assert period_label_for("yearly", on) != period_label_for("monthly", on)
+        labels = [
+            period_label_for(cycle, on)
+            for cycle in ("all", "one_time", "monthly", "quarterly", "half_yearly",
+                          "semester", "yearly")
+        ]
+        assert len(set(labels)) == len(labels), labels
 
     def test_monthly_due_date_follows_the_components_due_day(self):
         components = [{"due_day": 10}, {"due_day": 10}]
