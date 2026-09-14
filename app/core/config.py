@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     biometric_device_key: str = ""
 
     # ── Bootstrap ─────────────────────────────────────────────────────────
+    #: Seed plans and the platform owner on startup instead of via a shell.
+    #: Render's free tier has no SSH and no one-off jobs, so there is nowhere to
+    #: run the seed script — this is the way in. The bootstrap is idempotent, so
+    #: leaving it on across deploys is harmless.
+    bootstrap_on_startup: bool = False
     platform_owner_email: str = "owner@example.com"
     platform_owner_password: str = "ChangeMe123!"
     platform_owner_name: str = "Platform Owner"

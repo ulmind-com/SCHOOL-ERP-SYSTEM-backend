@@ -34,13 +34,35 @@ for noisy in ("pymongo", "pymongo.topology", "pymongo.connection", "pymongo.serv
 log = logging.getLogger("scholarly")
 
 
+async def _startup_tasks() -> None:
+    """Work that must not block the health check.
+
+    Index sync talks to Atlas 80+ times and takes ~20s; the bootstrap adds a
+    handful more. The app serves correctly (just less efficiently) while both
+    run, so neither is allowed to hold up the port a platform is waiting on.
+    """
+    await ensure_indexes()
+
+    if settings.bootstrap_on_startup:
+        try:
+            from scripts.bootstrap import run
+
+            result = await run()
+            log.info(
+                "Bootstrap: %s plan(s) seeded, platform owner %s",
+                result["plans_seeded"],
+                (result.get("platform_owner") or {}).get("email", "n/a"),
+            )
+        except Exception:
+            # A failed bootstrap must not take the API down — the rest of the
+            # app is fine, and the cause is in the logs.
+            log.exception("Bootstrap failed; the API is still serving")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_to_mongo()
-    # Index sync talks to Atlas 70+ times and can take 20s. It is idempotent and
-    # the app serves correctly (just less efficiently) while it runs, so it must
-    # not hold up the health check a platform like Render is waiting on.
-    index_task = asyncio.create_task(ensure_indexes())
+    index_task = asyncio.create_task(_startup_tasks())
     log.info(
         "%s API ready — mode=%s env=%s",
         settings.app_name, settings.deployment_mode, settings.environment,

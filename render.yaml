@@ -13,9 +13,17 @@ services:
     name: scholarly-api
     runtime: python
     plan: starter
-    region: singapore           # closest to Indian institutions
+    # Put this in the same region as your MongoDB Atlas cluster. A Render
+    # service in Oregon talking to an Atlas cluster in Mumbai pays ~230ms on
+    # every query, and a dashboard makes a dozen of them.
+    #   Atlas ap-south-1 (Mumbai)  -> singapore
+    #   Atlas eu-west / eu-central -> frankfurt
+    #   Atlas us-east-1            -> ohio or virginia
+    region: singapore
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 2
+    # One worker on 512 MB. Two FastAPI + Motor workers will not fit, and the
+    # instance is OOM-killed mid-request. Raise it with the instance size.
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -63,6 +71,10 @@ services:
         sync: false
       - key: PLATFORM_OWNER_NAME
         value: Platform Owner
+      # Render's free tier has no shell, so there is nowhere to run the seed
+      # script. This does it on boot instead. Idempotent.
+      - key: BOOTSTRAP_ON_STARTUP
+        value: "true"
 
       # ── Optional integrations ──────────────────────────────────
       # Safe to leave unset: each feature reports itself as not
