@@ -403,12 +403,22 @@ async def my_assignments(tenant: TenantContext, auth: AuthContext) -> list[dict[
         {"_id": auth.student_id, "tenant_id": tenant.id}
     )
     section_id = (student or {}).get("current_section_id")
-    if section_id is None:
+    class_id = (student or {}).get("current_class_id")
+    if section_id is None and class_id is None:
         return []
+
+    # A teacher who sets work for the whole class rarely lists its sections, so
+    # matching on sections alone left those students with an empty screen.
+    reach: list[dict[str, Any]] = []
+    if section_id is not None:
+        reach.append({"section_ids": section_id})
+    if class_id is not None:
+        reach.append({"class_id": class_id, "section_ids": {"$in": [[], None]}})
+        reach.append({"class_id": class_id, "section_ids": {"$exists": False}})
 
     assignments = await collection(C.ASSIGNMENTS).find({
         "tenant_id": tenant.id, "is_deleted": {"$ne": True},
-        "status": "published", "section_ids": section_id,
+        "status": "published", "$or": reach,
     }).sort([("due_date", 1)]).to_list(length=200)
 
     submissions = {
