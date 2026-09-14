@@ -454,3 +454,98 @@ async def impersonation_session(
             f"for {minutes} minutes. Everything you do is recorded against your own name."
         ),
     }
+
+
+#: Which role a person's own login gets, and where to find them.
+PERSON_KINDS: dict[str, tuple[str, str, str]] = {
+    # person_type: (collection, role key, link field on the user)
+    "student": (C.STUDENTS, "student", "student_id"),
+    "guardian": (C.GUARDIANS, "parent", "guardian_id"),
+    "staff": (C.STAFF, "teacher", "staff_id"),
+}
+
+
+def _person_name(person: dict) -> str:
+    return (
+        person.get("full_name")
+        or " ".join(filter(None, [person.get("first_name"), person.get("last_name")]))
+    ).strip()
+
+
+async def send_credentials(
+    tenant: TenantContext, auth: AuthContext, *, person_type: str, person_id: str,
+    role_key: str | None = None,
+) -> dict[str, Any]:
+    """Make sure this person can sign in, and email them how.
+
+    One button for the three cases a school actually hits: the login was never
+    created, it was created before mail was configured, or the parent deleted
+    the message. Creating and re-sending are the same request because from the
+    office's side they are the same intention — "get them in".
+    """
+    if person_type not in PERSON_KINDS:
+        raise ValidationError("Send credentials to a student, guardian or staff member")
+    coll, default_role, link_field = PERSON_KINDS[person_type]
+
+    person = await collection(coll).find_one(
+        {"_id": ObjectId(person_id), "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    )
+    if person is None:
+        raise NotFound(f"{person_type.title()} not found")
+
+    contact = person.get("contact") or {}
+    email = (contact.get("email") or "").strip().lower()
+    if not email:
+        raise ValidationError(
+            f"{_person_name(person) or 'This person'} has no email address on record. "
+            "Add one first — that is where the password goes."
+        )
+
+    existing = await collection(C.USERS).find_one(
+        {"tenant_id": tenant.id, link_field: person["_id"], "is_deleted": {"$ne": True}}
+    )
+    if existing is None:
+        # An address already in use by someone else must not be silently taken
+        # over, or two people end up sharing a login.
+        clash = await collection(C.USERS).find_one(
+            {"tenant_id": tenant.id, "email": email, "is_deleted": {"$ne": True}}
+        )
+        if clash:
+            raise Conflict(f"{email} already signs in here under another account")
+
+        role = await role_by_key(tenant.id, role_key or default_role)
+        if role is None:
+            raise ValidationError(
+                f"No '{role_key or default_role}' role exists yet. Create one under "
+                "Settings → Roles first."
+            )
+        result = await create_user(
+            tenant, auth,
+            email=email, full_name=_person_name(person), role_ids=[str(role["_id"])],
+            phone=contact.get("phone", ""), send_invite=True,
+            **{link_field: person["_id"]},
+        )
+        return {
+            **result,
+            "created": True,
+            "email": email,
+            "detail": (
+                f"Account created and the password emailed to {email}."
+                if settings.email_enabled
+                else f"Account created for {email}. No email provider is configured, "
+                     "so share the temporary password yourself."
+            ),
+        }
+
+    reset = await reset_user_password(tenant, str(existing["_id"]))
+    return {
+        **reset,
+        "id": str(existing["_id"]),
+        "created": False,
+        "email": email,
+        "detail": (
+            f"A new password has been emailed to {email}."
+            if settings.email_enabled
+            else "No email provider is configured, so share the temporary password yourself."
+        ),
+    }

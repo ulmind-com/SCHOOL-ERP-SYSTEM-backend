@@ -168,18 +168,41 @@ async def impersonate(
     return result
 
 
+class SendCredentialsRequest(AppModel):
+    #: student | guardian | staff
+    person_type: str
+    person_id: str
+    #: Which role the new login gets. Defaults to the obvious one for the type.
+    role_key: str | None = None
+
+
+@router.post("/users/send-credentials",
+             summary="Create or reset a person's login and email it to them")
+async def send_credentials(
+    payload: SendCredentialsRequest, auth: UserEditor, tenant: TenantDep, request: Request
+):
+    """Creating and re-sending are one request, because from the office's side
+    they are one intention: get this person in."""
+    result = await service.send_credentials(
+        tenant, auth,
+        person_type=payload.person_type, person_id=payload.person_id,
+        role_key=payload.role_key,
+    )
+    await record(auth, "users.credentials_sent", entity_type=payload.person_type,
+                 entity_id=payload.person_id, entity_label=result["email"],
+                 changes={"created": result["created"]}, request=request)
+    return result
+
+
 @router.post("/users/{user_id}/resend-invite", summary="Send the invitation again")
-async def resend_invite(user_id: str, auth: UserEditor, tenant: TenantDep):
-    from bson import ObjectId
-
-    from app.core.config import settings
-    from app.modules.auth.service import create_invite_token
-
-    token = await create_invite_token(ObjectId(user_id), tenant.id)
-    out = {"detail": "Invitation sent"}
-    if settings.debug:
-        out["invite_token"] = token
-    return out
+async def resend_invite(user_id: str, auth: UserEditor, tenant: TenantDep, request: Request):
+    """Issues a fresh password and emails it — the old invitation's password is
+    no longer valid, which is the point: an invitation nobody acted on has been
+    sitting in an inbox."""
+    result = await service.reset_user_password(tenant, user_id)
+    await record(auth, "users.invite_resent", entity_type="users", entity_id=user_id,
+                 request=request)
+    return result
 
 
 # ── Roles ─────────────────────────────────────────────────────────────────

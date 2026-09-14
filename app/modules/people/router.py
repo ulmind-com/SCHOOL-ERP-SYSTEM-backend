@@ -223,18 +223,30 @@ async def create_with_guardians(
     student = await students.create(data)
 
     guardian_ids: list[ObjectId] = []
+    logins: list[dict[str, Any]] = []
+    skipped: list[str] = []
+
     for raw in payload.guardians:
         guardian = await guardians.create(
             {**raw.model_dump(exclude_none=True), "student_ids": [student["_id"]]}
         )
         guardian_ids.append(guardian["_id"])
-        if payload.create_guardian_login and (guardian.get("contact") or {}).get("email"):
-            await create_user_for_person(
-                tenant, auth, email=guardian["contact"]["email"],
-                full_name=guardian.get("full_name", ""), role_key="parent",
-                phone=(guardian.get("contact") or {}).get("phone", ""),
-                guardian_id=guardian["_id"],
-            )
+        guardian_email = (guardian.get("contact") or {}).get("email", "")
+        if payload.create_guardian_login:
+            if guardian_email:
+                created = await create_user_for_person(
+                    tenant, auth, email=guardian_email,
+                    full_name=guardian.get("full_name", ""), role_key="parent",
+                    phone=(guardian.get("contact") or {}).get("phone", ""),
+                    guardian_id=guardian["_id"],
+                )
+                if created:
+                    logins.append({"for": "parent", **created})
+            else:
+                skipped.append(
+                    f"{guardian.get('full_name') or 'The guardian'} has no email address, "
+                    "so no parent login was created"
+                )
 
     if guardian_ids:
         await students.update(student["_id"], {
@@ -242,24 +254,50 @@ async def create_with_guardians(
         })
     await after_student_create(student, auth, tenant, students)
 
+    student_email = (student.get("contact") or {}).get("email", "")
     login = None
-    if payload.create_login and (student.get("contact") or {}).get("email"):
-        login = await create_user_for_person(
-            tenant, auth, email=student["contact"]["email"],
-            full_name=" ".join(filter(None, [student.get("first_name"),
-                                             student.get("last_name")])),
-            role_key="student", phone=(student.get("contact") or {}).get("phone", ""),
-            student_id=student["_id"],
-        )
+    if payload.create_login:
+        if student_email:
+            login = await create_user_for_person(
+                tenant, auth, email=student_email,
+                full_name=" ".join(filter(None, [student.get("first_name"),
+                                                 student.get("last_name")])),
+                role_key="student", phone=(student.get("contact") or {}).get("phone", ""),
+                student_id=student["_id"],
+            )
+            if login:
+                logins.append({"for": "student", **login})
+        else:
+            skipped.append(
+                "The student has no email address, so no student login was created"
+            )
 
     await record(auth, "students.admit", entity_type="students", entity_id=student["_id"],
                  entity_label=data.get("admission_number", ""), request=request)
+    # Say plainly what happened to the logins. Silence here is how a school ends
+    # up believing a parent was emailed when nothing was ever created.
+    from app.core.config import settings
+
+    mailed = [entry["email"] for entry in logins]
+    if mailed and settings.email_enabled:
+        detail = "Student admitted. Sign-in details emailed to " + ", ".join(mailed) + "."
+    elif mailed:
+        detail = (
+            "Student admitted, but no email provider is configured — share the "
+            "temporary passwords below yourself."
+        )
+    else:
+        detail = "Student admitted"
+
     return {
         "id": str(student["_id"]),
         "admission_number": student.get("admission_number"),
         "guardian_ids": [str(g) for g in guardian_ids],
         "login": login,
-        "detail": "Student admitted",
+        "logins": logins,
+        "skipped": skipped,
+        "email_configured": settings.email_enabled,
+        "detail": detail,
     }
 
 
