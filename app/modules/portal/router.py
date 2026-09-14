@@ -9,9 +9,9 @@ into the teacher's.
 Everything here is scoped by who is asking, never by an id in the request.
 """
 
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from app.core.context import AuthContext, TenantContext
 from app.core.deps import CurrentUser, TenantDep
@@ -23,7 +23,9 @@ from app.modules.people import service as people
 
 router = APIRouter(prefix="/portal", tags=["Portal"])
 
-Viewer = Annotated[AuthContext, Depends(CurrentUser)]
+#: CurrentUser is already an Annotated dependency; wrapping it in Depends()
+#: again makes FastAPI try to resolve its *args and **kwargs as query fields.
+Viewer = CurrentUser
 
 
 async def _my_students(auth: AuthContext, tenant: TenantContext) -> list[Any]:

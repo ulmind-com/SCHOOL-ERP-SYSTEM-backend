@@ -199,3 +199,24 @@ class TestPlanLimits:
         owned = TenantContext(id=ObjectId(), slug="green", name="G", deployment="dedicated")
         assert shared.storage_path() == "/tenants/green"
         assert owned.storage_path() == "/dedicated/green"
+
+
+class TestRouteWiring:
+    """Mistakes that compile, pass review, and 422 on the first real request."""
+
+    def test_no_route_asks_for_args_or_kwargs(self):
+        """The tell-tale of a dependency wrapped in Depends() twice.
+
+        ``CurrentUser`` is already an Annotated dependency; ``Depends(CurrentUser)``
+        makes FastAPI treat its signature as the route's, so the endpoint demands
+        query parameters called args and kwargs and nothing can ever call it.
+        """
+        from app.main import app
+
+        offenders = []
+        for path, methods in app.openapi()["paths"].items():
+            for method, operation in methods.items():
+                names = {p["name"] for p in operation.get("parameters", [])}
+                if names & {"args", "kwargs"}:
+                    offenders.append(f"{method.upper()} {path}")
+        assert offenders == [], offenders
