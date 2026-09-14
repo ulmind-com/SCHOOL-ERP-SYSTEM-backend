@@ -500,6 +500,57 @@ async def collection_summary(
     }
 
 
+async def family_fee_account(
+    tenant: TenantContext, auth: AuthContext
+) -> dict[str, Any]:
+    """The students a portal user may pay for, with what each owes.
+
+    A student and a parent hold ``invoices:read`` but not ``students:read`` —
+    they have no business listing the roll — so the portal cannot get the names
+    it needs from the students endpoint. This hands back only their own family.
+    """
+    from app.core.scoping import family_student_ids
+
+    allowed = await family_student_ids(auth, tenant)
+    query: dict[str, Any] = {"tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    if allowed is not None:
+        query["_id"] = {"$in": allowed}
+    elif auth.student_id:
+        query["_id"] = auth.student_id
+
+    students = await collection(C.STUDENTS).find(query).to_list(length=50)
+    class_ids = [s["current_class_id"] for s in students if s.get("current_class_id")]
+    classes = {
+        c["_id"]: c.get("name", "")
+        for c in await collection(C.CLASSES).find({"_id": {"$in": class_ids}}).to_list(None)
+    }
+
+    out = []
+    for student in students:
+        rows = await collection(C.FEE_INVOICES).aggregate([
+            {"$match": {"tenant_id": tenant.id, "student_id": student["_id"],
+                        "is_deleted": {"$ne": True},
+                        "status": {"$nin": ["cancelled", "draft"]}}},
+            {"$group": {"_id": None, "billed": {"$sum": "$total"},
+                        "paid": {"$sum": "$paid_amount"}}},
+        ]).to_list(length=1)
+        data = rows[0] if rows else {}
+        billed, paid = money(data.get("billed", 0)), money(data.get("paid", 0))
+        out.append({
+            "id": str(student["_id"]),
+            "full_name": " ".join(filter(None, [student.get("first_name"),
+                                                student.get("middle_name"),
+                                                student.get("last_name")])),
+            "admission_number": student.get("admission_number", ""),
+            "class_name": classes.get(student.get("current_class_id"), ""),
+            "billed": billed,
+            "paid": paid,
+            "outstanding": money(max(billed - paid, 0)),
+        })
+    out.sort(key=lambda s: s["full_name"])
+    return {"students": out, "outstanding": money(sum(s["outstanding"] for s in out))}
+
+
 async def student_ledger(tenant: TenantContext, student_id: str) -> dict[str, Any]:
     sid = ObjectId(student_id)
     invoices = await collection(C.FEE_INVOICES).find(

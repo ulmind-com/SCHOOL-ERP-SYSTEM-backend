@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.context import AuthContext
 from app.core.crud import Resource, build_crud_router
-from app.core.deps import TenantDep, require
+from app.core.deps import CurrentUser, TenantDep, require
 from app.core.scoping import assert_may_see_student, student_row_scope
 from app.db.mongo import C
 from app.models import finance as fin
@@ -135,6 +135,13 @@ async def collect(
                  entity_id=result["payment_id"], entity_label=result["receipt_number"],
                  changes={"amount": result["collected"]}, request=request)
     return result
+
+
+@fees.get("/my-account", summary="The fee account of the signed-in family")
+async def my_account(auth: CurrentUser, tenant: TenantDep):
+    """For the student and parent portals, which hold invoices:read but not
+    students:read — they cannot list the roll to find their own name."""
+    return await service.family_fee_account(tenant, auth)
 
 
 @fees.get("/ledger/{student_id}", summary="A student's invoices and receipts")
