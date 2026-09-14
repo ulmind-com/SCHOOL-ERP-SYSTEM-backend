@@ -102,7 +102,10 @@ NAVIGATION: tuple[NavGroup, ...] = (
         NavItem("appraisals", "Appraisals", "/hr/appraisals", "chart-line", "appraisals:read"),
     )),
     NavGroup("Facilities", (
-        NavItem("library", "Library", "/facilities/library", "book-marked", "library:read"),
+        NavItem("my-library", "Library", "/portal/library", "book-marked", "library:read",
+                module="library", portals=FAMILY),
+        NavItem("library", "Library", "/facilities/library", "book-marked", "library:read",
+                not_portals=FAMILY),
         NavItem("transport", "Transport", "/facilities/transport", "bus", "transport:read"),
         NavItem("hostel", "Hostel", "/facilities/hostel", "bed-double", "hostel:read"),
         NavItem("inventory", "Inventory", "/facilities/inventory", "package", "inventory:read"),

@@ -30,7 +30,7 @@ class ReturnRequest(AppModel):
 
 
 @router.get("/dashboard", summary="Circulation at a glance")
-async def dashboard(auth: Reader, tenant: TenantDep):
+async def dashboard(auth: Librarian, tenant: TenantDep):
     return await service.dashboard(tenant)
 
 
@@ -45,14 +45,23 @@ async def loans(
 ):
     from bson import ObjectId
 
+    from app.core.scoping import family_student_ids
+    from app.db.mongo import C
     from app.db.repository import Repository
 
-    repo = Repository(__import__("app.db.mongo", fromlist=["C"]).C.LIBRARY_LOANS, tenant.id)
+    repo = Repository(C.LIBRARY_LOANS, tenant.id)
     query: dict = {}
     if status:
         query["status"] = status
     if borrower_id and ObjectId.is_valid(borrower_id):
         query["borrower_id"] = ObjectId(borrower_id)
+
+    # library:read lets a student look up the catalogue. It is not a reason to
+    # show them who else has borrowed what, or what they owe in fines.
+    allowed = await family_student_ids(auth, tenant)
+    if allowed is not None:
+        query["borrower_id"] = {"$in": allowed}
+
     return await repo.paginate(query, page=page, page_size=page_size,
                                sort_by="issued_on", sort_dir="desc")
 
@@ -103,4 +112,7 @@ async def mark_overdue(auth: Librarian, tenant: TenantDep, request: Request):
 
 @router.get("/borrowers/{borrower_id}", summary="A borrower's history")
 async def borrower(borrower_id: str, auth: Reader, tenant: TenantDep):
+    from app.core.scoping import assert_may_see_student
+
+    await assert_may_see_student(auth, tenant, borrower_id)
     return await service.borrower_history(tenant, borrower_id)

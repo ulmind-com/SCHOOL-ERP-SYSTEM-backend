@@ -167,6 +167,7 @@ async def create_order(
         balance = money(float(invoice.get("total", 0)) - float(invoice.get("paid_amount", 0)))
         if balance <= 0:
             raise ValidationError("This invoice is already settled")
+        await _assert_collection_open(tenant, invoice)
         payable = balance
         student_oid = invoice["student_id"]
     else:
@@ -242,6 +243,36 @@ async def create_order(
             "contact": (student.get("contact") or {}).get("phone", ""),
         },
     }
+
+
+async def _assert_collection_open(tenant: TenantContext, invoice: dict) -> None:
+    """Refuse a payment outside the window the institution set for it.
+
+    A window enforced only in the browser is a suggestion. An examination fee
+    the school closed last week has to be closed here too, or the money arrives
+    and the office has to refund it.
+    """
+    from app.modules.fees.service import fee_plan
+
+    plan = await fee_plan(tenant, str(invoice["student_id"]))
+    for instalment in plan["instalments"]:
+        if instalment.get("invoice_id") != str(invoice["_id"]):
+            continue
+        if instalment.get("payable"):
+            return
+        if instalment.get("status") == "not_open_yet":
+            opens = instalment.get("opens_on") or "later"
+            raise ValidationError(
+                f"Payment for {instalment['period_label']} opens on {opens}."
+            )
+        if instalment.get("status") == "closed":
+            raise ValidationError(
+                f"Payment for {instalment['period_label']} closed on "
+                f"{instalment.get('closes_on')}. Pay at the office instead."
+            )
+        return
+    # An invoice the plan does not know about — raised by hand, or from a
+    # structure since changed. Nothing said it was shut, so let it through.
 
 
 async def _payable_student_ids(tenant: TenantContext, auth: AuthContext) -> set[ObjectId]:

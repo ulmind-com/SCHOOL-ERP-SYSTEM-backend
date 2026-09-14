@@ -75,10 +75,25 @@ class FeeHead(TenantDocument):
 class FeeComponent(AppModel):
     fee_head_id: str
     fee_head_name: str = ""
+    #: Shown to the family verbatim, so they can see what they are paying for.
+    description: str = ""
     amount: float = 0
     frequency: Frequency = Frequency.MONTHLY
     is_optional: bool = False
     due_day: int = 10               # day of month an instalment falls due
+
+    # ── When this charge can actually be paid ─────────────────────────────
+    #: Days before the due date that collection opens. ``None`` means it is
+    #: open as soon as the invoice exists — the usual case.
+    opens_days_before: int | None = None
+    #: Days after the due date that collection closes. ``None`` means it stays
+    #: open until it is paid, which is what a school wants for tuition.
+    closes_days_after: int | None = None
+    #: Fixed dates, for a one-off charge tied to a real event — an examination
+    #: fee collected for the fortnight before the exam. These win over the
+    #: relative offsets above when set.
+    collect_from: datetime | None = None
+    collect_until: datetime | None = None
 
 
 class FeeStructure(TenantDocument):

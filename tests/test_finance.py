@@ -1,6 +1,6 @@
 """Fee arithmetic. Money is the part a school will notice us getting wrong."""
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from bson import ObjectId
@@ -17,6 +17,7 @@ from app.models.finance import (
 )
 from app.modules.fees.service import (
     _add_months,
+    _collection_window,
     _due_date_for,
     _structure_covers,
     _student_is_billed_for,
@@ -231,3 +232,36 @@ class TestInstalmentDates:
 
     def test_february_in_a_leap_year(self):
         assert _add_months(date(2028, 1, 31), 1) == date(2028, 2, 29)
+
+
+class TestCollectionWindow:
+    """A school that opens an examination fee for a fortnight means it."""
+
+    def test_no_window_is_always_open(self):
+        assert _collection_window({}, date(2026, 9, 10)) == (None, None)
+
+    def test_relative_offsets_hang_off_the_due_date(self):
+        opens, closes = _collection_window(
+            {"opens_days_before": 7, "closes_days_after": 3}, date(2026, 9, 10)
+        )
+        assert opens == date(2026, 9, 3)
+        assert closes == date(2026, 9, 13)
+
+    def test_fixed_dates_win_over_offsets(self):
+        """An exam fee is tied to the exam, not to a due date that may move."""
+        opens, closes = _collection_window(
+            {
+                "opens_days_before": 7,
+                "collect_from": datetime(2026, 11, 1),
+                "collect_until": datetime(2026, 11, 15),
+            },
+            date(2026, 9, 10),
+        )
+        assert opens == date(2026, 11, 1)
+        assert closes == date(2026, 11, 15)
+
+    def test_one_sided_windows(self):
+        assert _collection_window({"closes_days_after": 5}, date(2026, 9, 10)) == (
+            None,
+            date(2026, 9, 15),
+        )

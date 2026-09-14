@@ -153,6 +153,31 @@ def _add_months(start: date, months: int) -> date:
     return date(year, month, day)
 
 
+def _as_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    return value.date() if hasattr(value, "date") else value
+
+
+def _collection_window(component: dict, due: date) -> tuple[date | None, date | None]:
+    """When this component can be paid, as ``(opens, closes)``.
+
+    Fixed dates win over the relative offsets: an examination fee collected for
+    the fortnight before the paper is a real date, not a number of days off a
+    due date that may itself have moved.
+    """
+    fixed_from = _as_date(component.get("collect_from"))
+    fixed_until = _as_date(component.get("collect_until"))
+    if fixed_from or fixed_until:
+        return fixed_from, fixed_until
+
+    before = component.get("opens_days_before")
+    after = component.get("closes_days_after")
+    opens = due - timedelta(days=int(before)) if before is not None else None
+    closes = due + timedelta(days=int(after)) if after is not None else None
+    return opens, closes
+
+
 async def applicable_structures(
     tenant: TenantContext, student: dict, academic_year_id: ObjectId | None = None
 ) -> list[dict[str, Any]]:
@@ -246,6 +271,7 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
                 on = _add_months(start.replace(day=due_day), index * stride)
                 label = period_label_for(cycle, on, index + 1)
                 key = (cycle, label)
+                opens, closes = _collection_window(component, on)
                 entry = instalments.setdefault(key, {
                     "cycle": cycle,
                     "period_label": label,
@@ -253,18 +279,40 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
                     "amount": 0.0,
                     "lines": [],
                     "structure": structure.get("name", ""),
+                    "opens_on": None,
+                    "closes_on": None,
                 })
                 entry["amount"] = money(entry["amount"] + amount)
                 entry["lines"].append({
                     "description": component.get("fee_head_name") or "Fee",
+                    "detail": component.get("description", ""),
                     "amount": amount,
+                    "optional": bool(component.get("is_optional")),
                 })
+                # Several components can share a period. The window they agree
+                # on is the widest one, or the family could be shut out of
+                # paying a bill that is already open.
+                if opens is not None:
+                    entry["opens_on"] = (
+                        min(entry["opens_on"], opens.isoformat())
+                        if entry["opens_on"] else opens.isoformat()
+                    )
+                if closes is not None:
+                    entry["closes_on"] = (
+                        max(entry["closes_on"], closes.isoformat())
+                        if entry["closes_on"] else closes.isoformat()
+                    )
 
     out = []
     for entry in sorted(instalments.values(), key=lambda e: (e["due_date"], e["cycle"])):
         invoice = by_label.get(entry["period_label"])
         due = date.fromisoformat(entry["due_date"])
         entry["scheduled_amount"] = entry["amount"]
+        opens = date.fromisoformat(entry["opens_on"]) if entry["opens_on"] else None
+        closes = date.fromisoformat(entry["closes_on"]) if entry["closes_on"] else None
+        entry["window_open"] = (opens is None or today >= opens) and (
+            closes is None or today <= closes
+        )
         if invoice:
             billed = money(invoice.get("total", 0))
             paid = money(invoice.get("paid_amount", 0))
@@ -275,11 +323,15 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
                 else "partially_paid" if paid > 0
                 else "due"
             )
+            if balance > 0 and not entry["window_open"]:
+                # Raised but outside its collection window — visible, not payable.
+                status = "closed" if closes and today > closes else "not_open_yet"
             entry.update({
                 "invoice_id": str(invoice["_id"]),
                 "invoice_number": invoice.get("number", ""),
                 "amount": billed, "paid": paid, "balance": balance, "status": status,
                 "raised": True,
+                "payable": balance > 0 and entry["window_open"],
             })
         else:
             # Not raised yet: the family can still see it coming, but there is
@@ -287,11 +339,11 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
             entry.update({
                 "invoice_id": None, "invoice_number": "",
                 "paid": 0.0, "balance": entry["amount"],
-                "status": "scheduled", "raised": False,
+                "status": "scheduled", "raised": False, "payable": False,
             })
         out.append(entry)
 
-    payable = [e for e in out if e["raised"] and e["balance"] > 0]
+    payable = [e for e in out if e["payable"]]
     return {
         "student_id": student_id,
         "academic_year": (year or {}).get("name", ""),
@@ -309,6 +361,10 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
             "billed": money(sum(e["amount"] for e in out if e["raised"])),
             "paid": money(sum(e["paid"] for e in out)),
             "due_now": money(sum(e["balance"] for e in payable)),
+            "awaiting_window": money(
+                sum(e["balance"] for e in out
+                    if e["raised"] and e["balance"] > 0 and not e["window_open"])
+            ),
             "overdue": money(sum(e["balance"] for e in out if e["status"] == "overdue")),
             "not_yet_raised": money(sum(e["scheduled_amount"] for e in out if not e["raised"])),
         },
