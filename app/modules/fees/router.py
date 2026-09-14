@@ -144,6 +144,14 @@ async def my_account(auth: CurrentUser, tenant: TenantDep):
     return await service.family_fee_account(tenant, auth)
 
 
+@fees.get("/plan/{student_id}", summary="The instalment schedule this student is on")
+async def plan(student_id: str, auth: Reader, tenant: TenantDep):
+    """Derived from the fee structure, not from invoices — so a family sees the
+    whole year the day they are admitted, including what has not been raised."""
+    await assert_may_see_student(auth, tenant, student_id)
+    return await service.fee_plan(tenant, student_id)
+
+
 @fees.get("/ledger/{student_id}", summary="A student's invoices and receipts")
 async def ledger(student_id: str, auth: Reader, tenant: TenantDep):
     await assert_may_see_student(auth, tenant, student_id)

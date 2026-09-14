@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.core.crud import Resource, build_crud_router
-from app.core.scoping import student_row_scope
+from app.core.scoping import family_class_scope, student_row_scope
 from app.db.mongo import C
 from app.models import academics as ac
 from app.models import communication as comm
@@ -63,6 +63,7 @@ RESOURCES: list[Resource] = [
         tags=["Academics"], search_fields=["name", "code", "short_name"],
         filters=["class_id", "department_id", "program_id", "type", "is_active"],
         sortable=["order", "name"], default_sort_dir="asc", unique_fields=["code"],
+        scope_hook=family_class_scope,
     ),
     Resource(
         name="subject-assignments", collection=C.SUBJECT_ASSIGNMENTS, module="subjects",
@@ -87,6 +88,7 @@ RESOURCES: list[Resource] = [
         label="Syllabus Unit", plural="Syllabus", tags=["Academics"],
         search_fields=["title"], filters=["subject_id", "class_id", "completed"],
         sortable=["order", "created_at"], default_sort_dir="asc",
+        scope_hook=family_class_scope,
     ),
     Resource(
         name="grade-scales", collection=C.GRADE_SCALES, module="exams", model=ac.GradeScale,

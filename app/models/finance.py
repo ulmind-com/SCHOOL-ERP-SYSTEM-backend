@@ -86,7 +86,15 @@ class FeeStructure(TenantDocument):
 
     name: str
     academic_year_id: PyObjectId
+    #: A school bills by class; a college bills by programme or department, and
+    #: the same structure has to serve both. Any of these matching is enough.
     class_ids: list[PyObjectId] = Field(default_factory=list)
+    program_ids: list[PyObjectId] = Field(default_factory=list)
+    department_ids: list[PyObjectId] = Field(default_factory=list)
+    #: Which semester this applies to, for a college that charges differently as
+    #: a course progresses. Empty means every semester.
+    semesters: list[int] = Field(default_factory=list)
+    #: Kept for structures written before the lists above existed.
     program_id: PyObjectId | None = None
     components: list[FeeComponent] = Field(default_factory=list)
     late_fee_per_day: float = 0

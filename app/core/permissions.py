@@ -271,7 +271,11 @@ ROLE_PRESETS: tuple[RolePreset, ...] = (
         [*_read("dashboard", "timetable", "subjects", "syllabus", "attendance",
                 "assignments", "results", "lms", "events", "announcements", "invoices",
                 "library", "documents"),
-         "assignments:update", "messages:*", "complaints:create", "complaints:read",
+         # Deliberately no assignments:update: that is what grades a submission,
+         # and it also opened the edit drawer on the assignment itself. Handing
+         # in homework goes through /homework/submit, which needs nothing more
+         # than being signed in.
+         "messages:*", "complaints:create", "complaints:read",
          "leaves:create", "leaves:read"],
         portal="student",
     ),

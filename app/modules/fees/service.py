@@ -135,6 +135,182 @@ def _ordinal(n: int) -> str:
     return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
 
 
+# ── The plan a student is on ──────────────────────────────────────────────
+#: How many months apart each cycle's instalments fall.
+CYCLE_STRIDE = {
+    "monthly": 1, "quarterly": 3, "half_yearly": 6, "semester": 6,
+    "yearly": 12, "one_time": 12,
+}
+
+
+def _add_months(start: date, months: int) -> date:
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    # Clamp rather than overflow: a due day of 31 in a 30-day month is the 30th.
+    day = min(start.day, [31, 29 if year % 4 == 0 and (year % 100 or not year % 400)
+                          else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+    return date(year, month, day)
+
+
+async def applicable_structures(
+    tenant: TenantContext, student: dict, academic_year_id: ObjectId | None = None
+) -> list[dict[str, Any]]:
+    """Every fee structure that covers this student.
+
+    A school matches on class, a college on programme or department, and a
+    college that charges differently per semester narrows further. Matching on
+    any of them is deliberate: one institution should not have to invent a class
+    to use a structure, nor a programme.
+    """
+    query: dict[str, Any] = {
+        "tenant_id": tenant.id, "is_active": True, "is_deleted": {"$ne": True},
+    }
+    year = academic_year_id or student.get("academic_year_id") or tenant.current_academic_year_id
+    if year:
+        query["academic_year_id"] = year
+
+    out = []
+    for structure in await collection(C.FEE_STRUCTURES).find(query).to_list(length=200):
+        if not _structure_covers(structure, student):
+            continue
+        out.append(structure)
+    return out
+
+
+def _structure_covers(structure: dict, student: dict) -> bool:
+    classes = structure.get("class_ids") or []
+    programs = structure.get("program_ids") or []
+    if structure.get("program_id"):
+        programs = [*programs, structure["program_id"]]
+    departments = structure.get("department_ids") or []
+    semesters = structure.get("semesters") or []
+
+    # A structure that names nothing is the institution's default.
+    if not (classes or programs or departments):
+        targeted = True
+    else:
+        targeted = (
+            student.get("current_class_id") in classes
+            or student.get("program_id") in programs
+            or student.get("department_id") in departments
+        )
+    if not targeted:
+        return False
+    if semesters and student.get("semester") not in semesters:
+        return False
+    return True
+
+
+async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
+    """What this student owes across the year, instalment by instalment.
+
+    Built from the structure rather than from invoices, so a family can see the
+    whole year the day they are admitted — including the instalments the office
+    has not raised yet. Where an invoice does exist for a period it is matched
+    in, and its payments decide the status.
+    """
+    _id = ObjectId(student_id)
+    student = await collection(C.STUDENTS).find_one(
+        {"_id": _id, "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    )
+    if student is None:
+        raise NotFound("Student not found")
+
+    structures = await applicable_structures(tenant, student)
+    year_id = student.get("academic_year_id") or tenant.current_academic_year_id
+    year = await collection(C.ACADEMIC_YEARS).find_one({"_id": year_id}) if year_id else None
+    year_start = (year or {}).get("start_date")
+    start = year_start.date() if hasattr(year_start, "date") else date(date.today().year, 4, 1)
+
+    invoices = await collection(C.FEE_INVOICES).find({
+        "tenant_id": tenant.id, "student_id": _id, "is_deleted": {"$ne": True},
+        "status": {"$nin": ["cancelled"]},
+    }).to_list(length=200)
+    by_label = {str(i.get("period_label") or ""): i for i in invoices}
+
+    today = date.today()
+    instalments: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for structure in structures:
+        for component in structure.get("components", []):
+            if not _student_is_billed_for(student, component):
+                continue
+            cycle = component.get("frequency") or "monthly"
+            count = INSTALMENTS.get(cycle, 1)
+            stride = CYCLE_STRIDE.get(cycle, 12)
+            amount = money(component.get("amount"))
+            due_day = min(max(int(component.get("due_day") or 10), 1), 28)
+
+            for index in range(count):
+                on = _add_months(start.replace(day=due_day), index * stride)
+                label = period_label_for(cycle, on, index + 1)
+                key = (cycle, label)
+                entry = instalments.setdefault(key, {
+                    "cycle": cycle,
+                    "period_label": label,
+                    "due_date": on.isoformat(),
+                    "amount": 0.0,
+                    "lines": [],
+                    "structure": structure.get("name", ""),
+                })
+                entry["amount"] = money(entry["amount"] + amount)
+                entry["lines"].append({
+                    "description": component.get("fee_head_name") or "Fee",
+                    "amount": amount,
+                })
+
+    out = []
+    for entry in sorted(instalments.values(), key=lambda e: (e["due_date"], e["cycle"])):
+        invoice = by_label.get(entry["period_label"])
+        due = date.fromisoformat(entry["due_date"])
+        if invoice:
+            billed = money(invoice.get("total", 0))
+            paid = money(invoice.get("paid_amount", 0))
+            balance = money(max(billed - paid, 0))
+            status = (
+                "paid" if balance <= 0
+                else "overdue" if due < today
+                else "partially_paid" if paid > 0
+                else "due"
+            )
+            entry.update({
+                "invoice_id": str(invoice["_id"]),
+                "invoice_number": invoice.get("number", ""),
+                "amount": billed, "paid": paid, "balance": balance, "status": status,
+                "raised": True,
+            })
+        else:
+            # Not raised yet: the family can still see it coming, but there is
+            # nothing to pay against until the office bills it.
+            entry.update({
+                "invoice_id": None, "invoice_number": "",
+                "paid": 0.0, "balance": entry["amount"],
+                "status": "scheduled", "raised": False,
+            })
+        out.append(entry)
+
+    payable = [e for e in out if e["raised"] and e["balance"] > 0]
+    return {
+        "student_id": student_id,
+        "academic_year": (year or {}).get("name", ""),
+        "structures": [
+            {"id": str(s["_id"]), "name": s.get("name", ""),
+             "cycles": sorted({c.get("frequency", "monthly") for c in s.get("components", [])})}
+            for s in structures
+        ],
+        "instalments": out,
+        "totals": {
+            "year": money(sum(e["amount"] for e in out)),
+            "paid": money(sum(e["paid"] for e in out)),
+            "due_now": money(sum(e["balance"] for e in payable)),
+            "overdue": money(sum(e["balance"] for e in out if e["status"] == "overdue")),
+            "not_yet_raised": money(sum(e["amount"] for e in out if not e["raised"])),
+        },
+        "next_due": payable[0] if payable else None,
+    }
+
+
 async def generate_invoices(
     tenant: TenantContext,
     auth: AuthContext,

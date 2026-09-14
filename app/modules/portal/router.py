@@ -57,6 +57,32 @@ async def me(auth: Viewer, tenant: TenantDep):
     }
 
 
+@router.get("/fees", summary="What this family owes, instalment by instalment")
+async def fees(auth: Viewer, tenant: TenantDep):
+    """The schedule and the ledger together — a portal home that made four
+    requests would spend a free-tier cold start doing nothing useful."""
+    from app.modules.fees import service as fees_service
+
+    ids = await _my_students(auth, tenant)
+    out = []
+    for sid in ids:
+        student = await collection(C.STUDENTS).find_one({"_id": sid, "tenant_id": tenant.id})
+        out.append({
+            "student": {
+                "id": str(sid),
+                "full_name": " ".join(filter(None, [
+                    (student or {}).get("first_name"),
+                    (student or {}).get("middle_name"),
+                    (student or {}).get("last_name"),
+                ])),
+                "admission_number": (student or {}).get("admission_number", ""),
+            },
+            "plan": await fees_service.fee_plan(tenant, str(sid)),
+            "ledger": await fees_service.student_ledger(tenant, str(sid)),
+        })
+    return {"students": out}
+
+
 @router.get("/announcements", summary="Notices for this family")
 async def announcements(auth: Viewer, tenant: TenantDep, limit: int = 10):
     await _my_students(auth, tenant)

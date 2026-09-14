@@ -16,7 +16,9 @@ from app.models.finance import (
     money,
 )
 from app.modules.fees.service import (
+    _add_months,
     _due_date_for,
+    _structure_covers,
     _student_is_billed_for,
     discount_for_line,
     instalment_labels,
@@ -182,3 +184,50 @@ class TestBillingCycles:
         components = [{"due_day": 5}, {"due_day": 20}]
         fallback = date(2026, 9, 30)
         assert _due_date_for("monthly", components, date(2026, 9, 1), fallback) == fallback
+
+
+class TestStructureMatching:
+    """A school bills by class, a college by programme — one structure type."""
+
+    def _student(self, **kwargs):
+        return {"current_class_id": None, "program_id": None, "department_id": None,
+                "semester": None, **kwargs}
+
+    def test_a_class_structure_matches_that_class(self):
+        structure = {"class_ids": ["c1"]}
+        assert _structure_covers(structure, self._student(current_class_id="c1"))
+        assert not _structure_covers(structure, self._student(current_class_id="c2"))
+
+    def test_a_programme_structure_matches_that_programme(self):
+        structure = {"program_ids": ["cse"]}
+        assert _structure_covers(structure, self._student(program_id="cse"))
+        assert not _structure_covers(structure, self._student(program_id="it"))
+
+    def test_a_department_structure_matches_that_department(self):
+        structure = {"department_ids": ["d1"]}
+        assert _structure_covers(structure, self._student(department_id="d1"))
+
+    def test_naming_nothing_covers_everyone(self):
+        """An institution with one fee book should not have to list its classes."""
+        assert _structure_covers({}, self._student(current_class_id="anything"))
+
+    def test_a_semester_structure_narrows_further(self):
+        structure = {"program_ids": ["cse"], "semesters": [3, 4]}
+        assert _structure_covers(structure, self._student(program_id="cse", semester=3))
+        assert not _structure_covers(structure, self._student(program_id="cse", semester=1))
+
+    def test_the_old_single_programme_field_still_counts(self):
+        """Structures written before the list existed must keep working."""
+        assert _structure_covers({"program_id": "cse"}, self._student(program_id="cse"))
+
+
+class TestInstalmentDates:
+    def test_months_advance_across_a_year_boundary(self):
+        assert _add_months(date(2026, 11, 10), 3) == date(2027, 2, 10)
+
+    def test_a_due_day_of_31_clamps_to_the_shorter_month(self):
+        """Otherwise the instalment after January has no date at all."""
+        assert _add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+
+    def test_february_in_a_leap_year(self):
+        assert _add_months(date(2028, 1, 31), 1) == date(2028, 2, 29)

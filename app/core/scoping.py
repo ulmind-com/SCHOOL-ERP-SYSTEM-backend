@@ -65,3 +65,26 @@ async def assert_may_see_student(
     if allowed is not None and oid not in allowed:
         raise Forbidden("You can only view your own records")
     return oid
+
+
+async def family_class_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
+    """Narrow a collection keyed by ``class_id`` to the family's own classes.
+
+    A student looking at Subjects should see the twelve their school teaches
+    across two years as the six that are theirs. Rows with no class at all stay
+    visible — an institution-wide subject belongs to everyone.
+    """
+    allowed = await family_student_ids(auth, tenant)
+    if allowed is None:
+        return {}
+    if not allowed:
+        return {"class_id": {"$in": []}}
+    class_ids = [
+        student["current_class_id"]
+        for student in await collection(C.STUDENTS).find(
+            {"_id": {"$in": allowed}, "tenant_id": tenant.id},
+            projection={"current_class_id": 1},
+        ).to_list(length=None)
+        if student.get("current_class_id")
+    ]
+    return {"class_id": {"$in": [*class_ids, None]}}
