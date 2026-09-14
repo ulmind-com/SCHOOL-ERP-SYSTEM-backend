@@ -264,6 +264,7 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
     for entry in sorted(instalments.values(), key=lambda e: (e["due_date"], e["cycle"])):
         invoice = by_label.get(entry["period_label"])
         due = date.fromisoformat(entry["due_date"])
+        entry["scheduled_amount"] = entry["amount"]
         if invoice:
             billed = money(invoice.get("total", 0))
             paid = money(invoice.get("paid_amount", 0))
@@ -301,11 +302,15 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
         ],
         "instalments": out,
         "totals": {
-            "year": money(sum(e["amount"] for e in out)),
+            # From the schedule, not the invoices. An office that bills several
+            # cycles on one invoice would otherwise have those lines counted
+            # twice — once inside that invoice, once as their own instalment.
+            "year": money(sum(e["scheduled_amount"] for e in out)),
+            "billed": money(sum(e["amount"] for e in out if e["raised"])),
             "paid": money(sum(e["paid"] for e in out)),
             "due_now": money(sum(e["balance"] for e in payable)),
             "overdue": money(sum(e["balance"] for e in out if e["status"] == "overdue")),
-            "not_yet_raised": money(sum(e["amount"] for e in out if not e["raised"])),
+            "not_yet_raised": money(sum(e["scheduled_amount"] for e in out if not e["raised"])),
         },
         "next_due": payable[0] if payable else None,
     }
