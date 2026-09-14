@@ -8,7 +8,10 @@ from app.models.base import AppModel
 
 
 class LoginRequest(AppModel):
-    email: EmailStr
+    #: Email address or phone number. Parents in particular are far likelier to
+    #: remember the number the school already has on file than an address the
+    #: office invented for them, so both are accepted.
+    email: str
     password: str
     #: Optional when the institution is already implied by subdomain, header or
     #: because the email exists at exactly one institution.

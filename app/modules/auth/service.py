@@ -164,10 +164,26 @@ async def build_auth_context(user: dict, tenant_id: ObjectId) -> AuthContext:
 
 
 # ── Institution discovery ─────────────────────────────────────────────────
+def _identifier_query(identifier: str) -> dict[str, Any]:
+    """Match a login on either the email address or the phone number.
+
+    Digits are compared with separators and a country code stripped, because
+    the number a school typed into the student record and the one a parent
+    types into the login box are rarely formatted the same way.
+    """
+    value = identifier.strip()
+    digits = "".join(c for c in value if c.isdigit())
+    if "@" in value or len(digits) < 6:
+        return {"email": value.lower()}
+    tail = digits[-10:]
+    return {"$or": [{"email": value.lower()}, {"phone_digits": tail}]}
+
+
 async def find_institutions_for_email(email: str) -> list[InstitutionChoice]:
-    """Which institutions this email can sign in to (used when it's ambiguous)."""
+    """Which institutions this identifier can sign in to (when it's ambiguous)."""
     tenant_ids = await collection(C.USERS).distinct(
-        "tenant_id", {"email": email.lower(), "is_active": True, "is_deleted": {"$ne": True}}
+        "tenant_id",
+        {**_identifier_query(email), "is_active": True, "is_deleted": {"$ne": True}},
     )
     if not tenant_ids:
         return []
@@ -228,9 +244,10 @@ async def authenticate(
     remember: bool = True,
 ) -> tuple[dict, AuthContext, TokenPair]:
     users = collection(C.USERS)
-    user = await users.find_one(
-        {"email": email.lower(), "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
-    )
+    user = await users.find_one({
+        **_identifier_query(email),
+        "tenant_id": tenant.id, "is_deleted": {"$ne": True},
+    })
     if user is None:
         raise Unauthorized("Incorrect email or password")
 
@@ -389,30 +406,9 @@ async def start_password_reset(email: str, tenant: TenantContext) -> str | None:
 
 
 async def email_password_reset(email: str, token: str) -> None:
-    """Send the reset link, and never let a mail failure answer the caller.
+    from app.modules.communication.account_mail import send_password_reset
 
-    The endpoint replies the same way whether or not the address exists, so an
-    exception escaping here would itself disclose that the account is real.
-    """
-    from app.modules.communication.notify import _send_email
-
-    link = f"{settings.web_app_url.rstrip('/')}/reset-password?token={token}"
-    try:
-        await _send_email(
-            email,
-            "Reset your password",
-            "Someone asked to reset the password on your account.\n\n"
-            f"Choose a new one here — the link is good for one hour:\n{link}\n\n"
-            "If that was not you, nothing has changed and you can ignore this.",
-            html=(
-                "<p>Someone asked to reset the password on your account.</p>"
-                f'<p><a href="{link}">Choose a new password</a> — '
-                "the link is good for one hour.</p>"
-                "<p>If that was not you, nothing has changed and you can ignore this.</p>"
-            ),
-        )
-    except Exception:
-        log.exception("Could not send the password reset mail")
+    await send_password_reset(to=email, token=token)
 
 
 async def finish_password_reset(token: str, new_password: str) -> None:

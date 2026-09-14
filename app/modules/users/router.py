@@ -143,6 +143,31 @@ async def reset_password(user_id: str, auth: UserEditor, tenant: TenantDep, requ
     return result
 
 
+class ImpersonateRequest(AppModel):
+    reason: str = ""
+
+
+@router.post("/users/{user_id}/impersonate",
+             summary="Open a short session inside another account")
+async def impersonate(
+    user_id: str,
+    payload: ImpersonateRequest,
+    auth: UserEditor,
+    tenant: TenantDep,
+    request: Request,
+):
+    """For support: see the app exactly as this person sees it.
+
+    The session lasts thirty minutes, cannot be refreshed, and every action
+    taken during it is recorded against the administrator who opened it.
+    """
+    result = await service.impersonation_session(tenant, auth, user_id)
+    await record(auth, "users.impersonate", entity_type="users", entity_id=user_id,
+                 entity_label=result["user"]["email"],
+                 changes={"reason": payload.reason}, request=request)
+    return result
+
+
 @router.post("/users/{user_id}/resend-invite", summary="Send the invitation again")
 async def resend_invite(user_id: str, auth: UserEditor, tenant: TenantDep):
     from bson import ObjectId

@@ -49,12 +49,51 @@ class Delivery:
 
 
 # ── Providers ─────────────────────────────────────────────────────────────
-async def _send_email(to: str, subject: str, body: str, html: str = "") -> Delivery:
-    if not settings.smtp_host:
-        return Delivery(Channel.EMAIL, to, "skipped", "No SMTP host configured")
+RESEND_API = "https://api.resend.com/emails"
 
+
+async def _send_email(to: str, subject: str, body: str, html: str = "") -> Delivery:
+    """Resend first, SMTP second, and a recorded skip when neither is set up."""
+    if settings.resend_api_key and settings.mail_address:
+        return await _send_email_resend(to, subject, body, html)
+    if settings.smtp_host:
+        return await _send_email_smtp(to, subject, body, html)
+    return Delivery(Channel.EMAIL, to, "skipped", "No email provider configured")
+
+
+async def _send_email_resend(to: str, subject: str, body: str, html: str) -> Delivery:
+    payload: dict[str, Any] = {
+        "from": settings.mail_sender,
+        "to": [to],
+        "subject": subject,
+        "text": body,
+    }
+    if html:
+        payload["html"] = html
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                RESEND_API,
+                headers={"Authorization": f"Bearer {settings.resend_api_key}"},
+                json=payload,
+            )
+        if response.status_code >= 400:
+            # Resend says exactly what is wrong (unverified domain, bad address);
+            # keeping the text is the difference between a fixable report and
+            # "email did not work".
+            detail = response.text[:200]
+            log.warning("Resend rejected mail to %s: %s", to, detail)
+            return Delivery(Channel.EMAIL, to, "failed", detail, "resend")
+        return Delivery(Channel.EMAIL, to, "sent",
+                        str(response.json().get("id", ""))[:60], "resend")
+    except Exception as exc:
+        log.warning("Resend call for %s failed: %s", to, exc)
+        return Delivery(Channel.EMAIL, to, "failed", str(exc)[:200], "resend")
+
+
+async def _send_email_smtp(to: str, subject: str, body: str, html: str = "") -> Delivery:
     message = EmailMessage()
-    message["From"] = settings.smtp_from or settings.smtp_user
+    message["From"] = settings.mail_sender
     message["To"] = to
     message["Subject"] = subject
     message.set_content(body)
@@ -360,8 +399,12 @@ def channel_status() -> list[dict[str, Any]]:
     return [
         {"channel": "in_app", "label": "In-app", "configured": True,
          "detail": "Always available"},
-        {"channel": "email", "label": "Email", "configured": bool(settings.smtp_host),
-         "detail": settings.smtp_host or "Set SMTP_HOST to enable"},
+        {"channel": "email", "label": "Email", "configured": settings.email_enabled,
+         "detail": (
+             f"Resend, from {settings.mail_sender}"
+             if settings.resend_api_key and settings.mail_address
+             else settings.smtp_host or "Set RESEND_API_KEY and MAIL_ADDRESS to enable"
+         )},
         {"channel": "sms", "label": "SMS", "configured": bool(settings.sms_api_url),
          "detail": settings.sms_api_url or "Set SMS_API_URL and SMS_API_KEY to enable"},
         {"channel": "push", "label": "Push", "configured": bool(settings.fcm_server_key),

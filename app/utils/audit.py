@@ -36,6 +36,11 @@ async def record(
         "changes": changes or {},
         "actor_id": auth.user_id if auth else None,
         "actor_name": auth.full_name if auth else "system",
+        # An impersonated session writes under the borrowed account, so without
+        # this the trail would say the student changed their own marks.
+        "on_behalf_of_id": auth.impersonated_by_id if auth else None,
+        "on_behalf_of_name": auth.impersonated_by_name if auth else "",
+        "impersonated": bool(auth.impersonating) if auth else False,
         "created_at": utcnow(),
         "is_deleted": False,
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from bson import ObjectId
@@ -10,10 +11,16 @@ from app.core.config import settings
 from app.core.context import AuthContext, TenantContext
 from app.core.exceptions import Conflict, Forbidden, LimitExceeded, NotFound, ValidationError
 from app.core.permissions import ALL_PERMISSIONS, expand
-from app.core.security import hash_password
+from app.core.security import hash_password, phone_digits
 from app.db.mongo import C, collection
 from app.models.base import serialize_doc, utcnow
 from app.modules.auth.service import create_invite_token, temporary_password
+from app.modules.communication.account_mail import (
+    send_invite as send_invite_mail,
+)
+from app.modules.communication.account_mail import (
+    send_temporary_password,
+)
 
 
 async def role_by_key(tenant_id: ObjectId, key: str) -> dict[str, Any] | None:
@@ -82,6 +89,7 @@ async def create_user(
         "email": email,
         "full_name": full_name.strip(),
         "phone": phone,
+        "phone_digits": phone_digits(phone),
         "password_hash": hash_password(temp),
         "role_ids": [r["_id"] for r in roles],
         "status": "invited" if send_invite else "active",
@@ -113,8 +121,17 @@ async def create_user(
     }
     if send_invite:
         token = await create_invite_token(user_id, tenant.id)
-        # Emailing is the notification layer's job; in development we hand the
-        # token back so the flow is testable without a mail server.
+        await send_invite_mail(
+            to=email, full_name=full_name, tenant=tenant,
+            token=token, temporary_password=temp,
+        )
+        result["email_sent"] = settings.email_enabled
+        if not settings.email_enabled:
+            # Nothing was delivered, so the password has to come back through
+            # the screen or the account is unreachable.
+            result["temporary_password"] = temp
+            result["detail"] += " — no email provider is configured, so share " \
+                                "the temporary password yourself"
         if settings.debug:
             result["invite_token"] = token
     else:
@@ -129,6 +146,7 @@ async def create_user_for_person(
     email: str,
     full_name: str,
     role_key: str,
+    phone: str = "",
     student_id: ObjectId | None = None,
     staff_id: ObjectId | None = None,
     guardian_id: ObjectId | None = None,
@@ -145,7 +163,7 @@ async def create_user_for_person(
                 "detail": "Account already existed"}
     return await create_user(
         tenant, auth, email=email, full_name=full_name, role_ids=[str(role["_id"])],
-        student_id=student_id, staff_id=staff_id, guardian_id=guardian_id,
+        phone=phone, student_id=student_id, staff_id=staff_id, guardian_id=guardian_id,
     )
 
 
@@ -225,19 +243,29 @@ async def set_user_active(
 
 async def reset_user_password(tenant: TenantContext, user_id: str) -> dict[str, Any]:
     temp = temporary_password()
-    result = await collection(C.USERS).update_one(
-        {"_id": ObjectId(user_id), "tenant_id": tenant.id},
+    user = await collection(C.USERS).find_one_and_update(
+        {"_id": ObjectId(user_id), "tenant_id": tenant.id, "is_deleted": {"$ne": True}},
         {"$set": {"password_hash": hash_password(temp), "must_change_password": True,
                   "updated_at": utcnow()},
          "$unset": {"locked_until": "", "failed_login_attempts": ""}},
     )
-    if result.matched_count == 0:
+    if user is None:
         raise NotFound("User not found")
+    # Every existing session dies with the old password, or a stolen one
+    # outlives the reset that was meant to end it.
     await collection(C.SESSIONS).update_many(
         {"user_id": ObjectId(user_id), "revoked_at": None}, {"$set": {"revoked_at": utcnow()}}
     )
-    return {"temporary_password": temp,
-            "detail": "Password reset. Share the temporary password securely."}
+    await send_temporary_password(
+        to=user.get("email", ""), full_name=user.get("full_name", ""),
+        tenant=tenant, temporary_password=temp,
+    )
+    if settings.email_enabled:
+        return {"email_sent": True,
+                "detail": f"A new password has been emailed to {user.get('email', '')}."}
+    return {"temporary_password": temp, "email_sent": False,
+            "detail": "Password reset. No email provider is configured, so share "
+                      "the temporary password yourself."}
 
 
 async def list_users(
@@ -371,3 +399,58 @@ async def list_roles(tenant: TenantContext) -> list[dict[str, Any]]:
         row["effective_permission_count"] = len(expand(doc.get("permissions") or []))
         out.append(row)
     return out
+
+
+async def impersonation_session(
+    tenant: TenantContext, auth: AuthContext, user_id: str, *, minutes: int = 30
+) -> dict[str, Any]:
+    """A short-lived session inside another account, for support.
+
+    An administrator who cannot see what a parent sees cannot answer "the app
+    is not showing my child's marks". This opens that view without needing the
+    parent's password — and every write made during it is attributed to the
+    administrator as well, so the trail never reads as if the parent did it.
+    """
+    from app.core.security import create_token
+
+    target_id = ObjectId(user_id)
+    if target_id == auth.user_id:
+        raise ValidationError("You are already signed in as yourself")
+
+    target = await collection(C.USERS).find_one(
+        {"_id": target_id, "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    )
+    if target is None:
+        raise NotFound("Account not found")
+    if not target.get("is_active", True):
+        raise ValidationError("That account is deactivated. Reactivate it first.")
+
+    # Borrowing an owner's account would be a way around every check above it.
+    if await _has_owner_role(tenant.id, target.get("role_ids") or []) and not auth.is_owner:
+        raise Forbidden("Only the institution owner can open an owner's account")
+
+    extra = {
+        "imp": True,
+        "act": str(auth.user_id),
+        "actn": auth.full_name or auth.email,
+    }
+    access = create_token(
+        str(target_id), "access", tenant_id=str(tenant.id),
+        expires_delta=timedelta(minutes=minutes), extra=extra,
+    )
+    return {
+        "access_token": access,
+        # Deliberately no refresh token: the session ends when it ends, rather
+        # than quietly renewing itself for a month.
+        "token_type": "bearer",
+        "expires_in": minutes * 60,
+        "user": {
+            "id": str(target_id),
+            "email": target.get("email", ""),
+            "full_name": target.get("full_name", ""),
+        },
+        "detail": (
+            f"Viewing as {target.get('full_name') or target.get('email')} "
+            f"for {minutes} minutes. Everything you do is recorded against your own name."
+        ),
+    }

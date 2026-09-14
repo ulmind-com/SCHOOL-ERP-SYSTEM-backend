@@ -125,6 +125,81 @@ async def check_section_capacity(tenant_id: ObjectId, section_id: ObjectId | Non
         )
 
 
+async def assign_roll_numbers(
+    tenant: TenantContext,
+    auth: AuthContext,
+    *,
+    section_id: str,
+    order_by: str = "first_name",
+    start_at: int = 1,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Number a section's students in one pass.
+
+    Schools renumber every year and the order is a house rule — alphabetical is
+    the common one, admission order the other. ``overwrite`` off leaves numbers
+    already assigned alone, so a mid-year admission can be slotted in without
+    disturbing the register everyone has already written in.
+    """
+    if order_by not in {"first_name", "last_name", "admission_number", "date_of_birth"}:
+        raise ValidationError("Order by name, surname, admission number or date of birth")
+
+    section_oid = ObjectId(section_id)
+    students = await collection(C.STUDENTS).find({
+        "tenant_id": tenant.id, "current_section_id": section_oid,
+        "status": "active", "is_deleted": {"$ne": True},
+    }).to_list(length=1000)
+    if not students:
+        raise ValidationError("That section has no active students")
+
+    def sort_key(doc: dict) -> Any:
+        value = doc.get(order_by)
+        if order_by == "date_of_birth":
+            return (value is None, value)
+        return str(value or "").strip().lower()
+
+    students.sort(key=sort_key)
+
+    repo = Repository(C.STUDENTS, tenant.id, actor_id=auth.user_id)
+    taken = {
+        str(s.get("roll_number") or "")
+        for s in students
+        if not overwrite and s.get("roll_number")
+    }
+    number, changed, skipped = start_at, 0, 0
+    assignments: list[dict[str, Any]] = []
+
+    for student in students:
+        if not overwrite and student.get("roll_number"):
+            skipped += 1
+            continue
+        while str(number) in taken:
+            number += 1
+        roll = str(number)
+        if student.get("roll_number") != roll:
+            await repo.update(student["_id"], {"roll_number": roll})
+            changed += 1
+        assignments.append({
+            "student_id": str(student["_id"]),
+            "name": " ".join(filter(None, [student.get("first_name"),
+                                           student.get("last_name")])),
+            "roll_number": roll,
+        })
+        taken.add(roll)
+        number += 1
+
+    return {
+        "section_id": section_id,
+        "assigned": changed,
+        "kept": skipped,
+        "students": assignments,
+        "detail": (
+            f"{changed} roll number(s) assigned"
+            + (f", {skipped} kept as they were" if skipped else "")
+        ),
+    }
+
+
 # ── Profile assembly ──────────────────────────────────────────────────────
 async def student_profile(tenant: TenantContext, student_id: str) -> dict[str, Any]:
     """Everything a student's page needs, in one request rather than eight."""

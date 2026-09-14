@@ -112,3 +112,13 @@ def generate_license_key(slug: str) -> str:
     digest = hmac.new(settings.secret_key.encode(), slug.encode(), hashlib.sha256).hexdigest()
     chunks = [digest[i : i + 5].upper() for i in range(0, 20, 5)]
     return "SCHLY-" + "-".join(chunks)
+
+
+def phone_digits(value: str | None) -> str:
+    """The last ten digits of a phone number, or "" when there is no number.
+
+    Stored alongside the raw phone so a login can be matched however the person
+    types it — with a country code, with spaces, with a leading zero.
+    """
+    digits = "".join(c for c in (value or "") if c.isdigit())
+    return digits[-10:] if len(digits) >= 6 else ""

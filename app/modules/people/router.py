@@ -232,6 +232,7 @@ async def create_with_guardians(
             await create_user_for_person(
                 tenant, auth, email=guardian["contact"]["email"],
                 full_name=guardian.get("full_name", ""), role_key="parent",
+                phone=(guardian.get("contact") or {}).get("phone", ""),
                 guardian_id=guardian["_id"],
             )
 
@@ -247,7 +248,8 @@ async def create_with_guardians(
             tenant, auth, email=student["contact"]["email"],
             full_name=" ".join(filter(None, [student.get("first_name"),
                                              student.get("last_name")])),
-            role_key="student", student_id=student["_id"],
+            role_key="student", phone=(student.get("contact") or {}).get("phone", ""),
+            student_id=student["_id"],
         )
 
     await record(auth, "students.admit", entity_type="students", entity_id=student["_id"],
@@ -314,6 +316,32 @@ async def link_guardian(
         {"_id": gid, "tenant_id": tenant.id}, {"$addToSet": {"student_ids": sid}}
     )
     return Msg(detail="Guardian linked")
+
+
+class RollNumberRequest(AppModel):
+    section_id: str
+    #: first_name | last_name | admission_number | date_of_birth
+    order_by: str = "first_name"
+    start_at: int = 1
+    #: Off by default, so a mid-year admission slots in without renumbering a
+    #: register the class has already written in.
+    overwrite: bool = False
+
+
+@students_extra.post("/assign-roll-numbers", summary="Number a section's students")
+async def assign_rolls(
+    payload: RollNumberRequest, auth: Writer, tenant: TenantDep, request: Request
+):
+    result = await service.assign_roll_numbers(
+        tenant, auth,
+        section_id=payload.section_id, order_by=payload.order_by,
+        start_at=payload.start_at, overwrite=payload.overwrite,
+    )
+    await record(auth, "students.roll_numbers_assigned", entity_type="students",
+                 entity_id=payload.section_id,
+                 changes={"assigned": result["assigned"], "order_by": payload.order_by},
+                 request=request)
+    return result
 
 
 @students_extra.get("/roster/{section_id}", summary="Class roster for a section")

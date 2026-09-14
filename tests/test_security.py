@@ -16,9 +16,11 @@ from app.core.security import (
     generate_license_key,
     hash_password,
     password_problems,
+    phone_digits,
     verify_password,
 )
 from app.core.tenancy import subdomain_of
+from app.modules.auth.service import _identifier_query
 
 
 def _tenant() -> TenantContext:
@@ -180,3 +182,34 @@ class TestRowScoping:
 
         for resource in (INVOICES, PAYMENTS, ENROLLMENTS, STUDENTS):
             assert resource.scope_hook is not None, resource.name
+
+
+class TestLoginIdentifier:
+    """A parent remembers the number the school already has, not an address
+    the office invented for them — so both have to work."""
+
+    def test_an_email_matches_on_email_only(self):
+        assert _identifier_query("Head@Valley.Demo") == {"email": "head@valley.demo"}
+
+    def test_a_phone_number_matches_on_either(self):
+        query = _identifier_query("98765 43210")
+        assert query["$or"] == [{"email": "98765 43210"}, {"phone_digits": "9876543210"}]
+
+    def test_a_country_code_is_ignored(self):
+        assert _identifier_query("+91 98765 43210")["$or"][1] == {"phone_digits": "9876543210"}
+
+    def test_something_too_short_is_treated_as_an_email(self):
+        """Otherwise a typo'd address would silently become a phone lookup."""
+        assert _identifier_query("abc12") == {"email": "abc12"}
+
+
+class TestPhoneDigits:
+    def test_separators_and_country_code_are_stripped(self):
+        assert phone_digits("+91 98765-43210") == "9876543210"
+
+    def test_a_short_number_is_not_stored(self):
+        """A three-digit extension is not something to match a login on."""
+        assert phone_digits("123") == ""
+
+    def test_missing_is_empty(self):
+        assert phone_digits(None) == ""

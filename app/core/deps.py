@@ -162,6 +162,8 @@ async def get_current_auth(
         staff_id=user.get("staff_id"),
         guardian_id=user.get("guardian_id"),
         impersonating=bool(payload.get("imp")),
+        impersonated_by_id=oid(payload.get("act")),
+        impersonated_by_name=str(payload.get("actn") or ""),
         avatar_url=user.get("avatar_url", ""),
     )
 

@@ -95,8 +95,13 @@ class AuthContext:
     student_id: ObjectId | None = None
     staff_id: ObjectId | None = None
     guardian_id: ObjectId | None = None
-    #: Platform staff acting inside a tenant for support.
+    #: Someone is acting as this user — platform support inside a tenant, or an
+    #: institution admin opening a student's portal to see what they see.
     impersonating: bool = False
+    #: Who is really at the keyboard. Every write is attributed to them as well
+    #: as to the account being used, so "who changed this" has one answer.
+    impersonated_by_id: ObjectId | None = None
+    impersonated_by_name: str = ""
     avatar_url: str = ""
 
     @property

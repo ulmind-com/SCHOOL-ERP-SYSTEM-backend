@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     imagekit_id: str = ""
 
     # ── Email (SMTP) ──────────────────────────────────────────────────────
+    #: Resend is tried before SMTP — it is an HTTPS call rather than a socket,
+    #: which is the difference between working and not on a PaaS that blocks
+    #: outbound port 587.
+    resend_api_key: str = ""
+    mail_address: str = ""
+    mail_from_name: str = ""
+
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
@@ -159,6 +166,17 @@ class Settings(BaseSettings):
     @property
     def imagekit_enabled(self) -> bool:
         return bool(self.imagekit_private_key and self.imagekit_url_endpoint)
+
+    @property
+    def email_enabled(self) -> bool:
+        return bool(self.resend_api_key and self.mail_address) or bool(self.smtp_host)
+
+    @property
+    def mail_sender(self) -> str:
+        """``Name <address>`` when a display name is set, else the bare address."""
+        address = self.mail_address or self.smtp_from or self.smtp_user
+        name = self.mail_from_name or self.app_name
+        return f"{name} <{address}>" if address and name else address
 
     @property
     def payments_enabled(self) -> bool:

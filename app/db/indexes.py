@@ -56,6 +56,8 @@ INDEXES: dict[str, list[IndexModel]] = {
     # ── Identity ──────────────────────────────────────────────────────────
     C.USERS: [
         _u("email"),
+        # Not unique: a parent and their child can legitimately share one number.
+        _i("phone_digits"),
         _i("status"), _i("student_id"), _i("staff_id"), _i("guardian_id"),
         IndexModel([(T, ASCENDING), ("full_name", TEXT), ("email", TEXT), ("phone", TEXT)]),
     ],
