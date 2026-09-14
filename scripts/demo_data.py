@@ -7,7 +7,9 @@ structure with invoices and part-payments, and an exam with marks.
 
 from __future__ import annotations
 
+import os
 import random
+import secrets
 from datetime import UTC, date, datetime, timedelta
 
 from bson import ObjectId
@@ -61,14 +63,21 @@ async def seed_demo() -> dict:
 
     if existing:
         tenant_id = existing["_id"]
-        owner_password = "(unchanged — set at first seed)"
+        owner_password = "(unchanged — set when the demo was first seeded)"
     else:
+        # Generated, never hardcoded. This repository is public, and a literal
+        # here would be a known password on every deployment that ever runs
+        # `seed --demo`. Override with DEMO_OWNER_PASSWORD if you want a fixed
+        # one for a shared sandbox.
+        owner_password = os.getenv("DEMO_OWNER_PASSWORD") or (
+            f"Demo-{secrets.token_urlsafe(9)}"
+        )
         result = await provision_tenant(
             name="Valley International School",
             slug=slug,
             owner_email="head@valley.demo",
             owner_name="Dr. Kalpana Menon",
-            owner_password="Valley@2026",
+            owner_password=owner_password,
             institution_type="school",
             plan_key="scale",
             deployment="saas",
@@ -76,7 +85,6 @@ async def seed_demo() -> dict:
             address={"city": "Kolkata", "state": "West Bengal", "country": "India"},
         )
         tenant_id = result["tenant_id"]
-        owner_password = result["owner_password"]
 
     year = await collection(C.ACADEMIC_YEARS).find_one(
         {"tenant_id": tenant_id, "is_current": True}
