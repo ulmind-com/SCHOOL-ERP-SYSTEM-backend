@@ -251,6 +251,13 @@ async def exam_results(tenant_id: ObjectId, student_id: ObjectId) -> list[dict[s
         ).to_list(None)
     }
 
+    # Grades are stamped onto a mark when it is saved, but marks imported or
+    # seeded before a scale existed have none. Filling one in for display costs
+    # a lookup and saves a report card full of dashes.
+    from app.modules.exams.service import _grade_scale_for, grade_for
+
+    scales: dict[Any, dict | None] = {}
+
     grouped: dict[Any, dict[str, Any]] = {}
     for mark in marks:
         exam = exams.get(mark.get("exam_id")) or {}
@@ -268,14 +275,23 @@ async def exam_results(tenant_id: ObjectId, student_id: ObjectId) -> list[dict[s
         if obtained is None:
             obtained = mark.get("marks_obtained")
         maximum = float(mark.get("max_marks") or 0)
+
+        grade = mark.get("grade", "")
+        percentage = mark.get("percentage")
+        if not grade and percentage is not None:
+            exam_key = mark.get("exam_id")
+            if exam_key not in scales:
+                scales[exam_key] = await _grade_scale_for(tenant_id, exam)
+            grade = grade_for(scales[exam_key], float(percentage))[0]
+
         bucket["subjects"].append({
             "subject_id": str(mark.get("subject_id") or ""),
             "subject_name": subject.get("name", "Subject"),
             "code": subject.get("code", ""),
             "marks_obtained": obtained,
             "max_marks": maximum,
-            "percentage": mark.get("percentage"),
-            "grade": mark.get("grade", ""),
+            "percentage": percentage,
+            "grade": grade,
             "is_pass": mark.get("is_pass"),
         })
         if obtained is not None:
@@ -289,6 +305,10 @@ async def exam_results(tenant_id: ObjectId, student_id: ObjectId) -> list[dict[s
             round(bucket["obtained"] / bucket["max_marks"] * 100, 2)
             if bucket["max_marks"] else None
         )
+        # Summing halves in binary gives 369.70000000000005; nobody wants that
+        # on a report card.
+        bucket["obtained"] = round(bucket["obtained"], 2)
+        bucket["max_marks"] = round(bucket["max_marks"], 2)
         out.append(bucket)
     out.sort(key=lambda b: b["exam_name"])
     return out
