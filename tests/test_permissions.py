@@ -100,16 +100,34 @@ class TestNavigation:
         return TenantContext(id=ObjectId(), slug="x", name="X", **kwargs)
 
     def test_dedicated_deployment_sees_every_nav_item(self):
-        """An owner on a dedicated deployment has nothing withheld — so the
-        rendered menu should match the definition exactly, whatever its size."""
+        """An owner on a dedicated deployment has nothing withheld by plan or
+        permission — so the menu matches the definition, less the handful of
+        items that belong to a different portal."""
         tenant = self._tenant(deployment="dedicated")
         owner = AuthContext(
             user_id=ObjectId(), email="a@b.c", full_name="T",
             permissions=expand(["*"]), is_owner=True,
         )
         rendered = {i["key"] for g in build_navigation(owner, tenant) for i in g["items"]}
-        defined = {item.key for group in NAVIGATION for item in group.items}
+        defined = {
+            item.key
+            for group in NAVIGATION
+            for item in group.items
+            if not item.portals and "admin" not in item.not_portals
+        }
         assert rendered == defined
+
+    def test_a_parent_gets_their_own_fee_screen_not_the_bursars(self):
+        """Both hang off invoices:read; only the portal tells them apart."""
+        tenant = self._tenant(deployment="dedicated")
+        parent = AuthContext(
+            user_id=ObjectId(), email="p@b.c", full_name="P",
+            permissions=expand(["invoices:read", "payments:read"]), portal="parent",
+        )
+        keys = {i["key"] for g in build_navigation(parent, tenant) for i in g["items"]}
+        assert "my-fees" in keys
+        assert "invoices" not in keys
+        assert "payments" not in keys
 
     def test_saas_plan_hides_modules_it_does_not_include(self):
         tenant = self._tenant(deployment="saas", enabled_modules={"students", "guardians"})

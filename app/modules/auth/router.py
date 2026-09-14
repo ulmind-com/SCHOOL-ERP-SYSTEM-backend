@@ -113,6 +113,8 @@ async def change_password(payload: ChangePasswordRequest, auth: CurrentUser, req
 async def forgot_password(payload: ForgotPasswordRequest, tenant: OptionalTenantDep = None):
     resolved = await service.resolve_login_tenant(payload.email, payload.institution, tenant)
     token = await service.start_password_reset(payload.email, resolved)
+    if token:
+        await service.email_password_reset(payload.email, token)
     response = Msg(detail="If that address has an account, a reset link is on its way.")
     if settings.debug and token:
         # Development convenience only — never returned once DEBUG is off.

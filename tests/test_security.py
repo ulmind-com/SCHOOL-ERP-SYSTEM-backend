@@ -1,10 +1,14 @@
 """Password handling, tokens and tenant resolution."""
 
+import asyncio
 from datetime import timedelta
 
 import pytest
+from bson import ObjectId
 
 from app.core.config import settings
+from app.core.context import AuthContext, TenantContext
+from app.core.scoping import student_row_scope
 from app.core.security import (
     create_token,
     decode_token,
@@ -15,6 +19,10 @@ from app.core.security import (
     verify_password,
 )
 from app.core.tenancy import subdomain_of
+
+
+def _tenant() -> TenantContext:
+    return TenantContext(id=ObjectId(), slug="x", name="X")
 
 
 class TestPasswords:
@@ -137,3 +145,38 @@ class TestSubdomainResolution:
     def test_disabled_when_no_base_domain_is_configured(self):
         settings.tenant_base_domain = ""
         assert subdomain_of("stjohns.scholarly.app") is None
+
+
+class TestRowScoping:
+    """Permissions say *whether*; these hooks say *whose*.
+
+    A student and a parent both legitimately hold ``invoices:read``. What keeps
+    the portal safe is the query narrowing that happens before Mongo sees it.
+    """
+
+    def _auth(self, **kwargs) -> AuthContext:
+        return AuthContext(user_id=ObjectId(), email="a@b.c", full_name="T", **kwargs)
+
+    def test_a_student_is_narrowed_to_themselves(self):
+        student_id = ObjectId()
+        auth = self._auth(portal="student", student_id=student_id)
+        scope = asyncio.run(student_row_scope(auth, _tenant()))
+        assert scope == {"student_id": {"$in": [student_id]}}
+
+    def test_staff_are_not_narrowed_at_all(self):
+        auth = self._auth(portal="admin", permissions=["*"])
+        assert asyncio.run(student_row_scope(auth, _tenant())) == {}
+
+    def test_a_portal_account_with_no_links_sees_nothing(self):
+        """The dangerous case: an empty filter would mean *everything*."""
+        auth = self._auth(portal="parent")
+        scope = asyncio.run(student_row_scope(auth, _tenant()))
+        assert scope == {"student_id": {"$in": []}}
+
+    def test_every_student_keyed_resource_carries_the_hook(self):
+        """A new resource keyed by student must not ship without scoping."""
+        from app.modules.fees.router import INVOICES, PAYMENTS
+        from app.modules.people.router import ENROLLMENTS, STUDENTS
+
+        for resource in (INVOICES, PAYMENTS, ENROLLMENTS, STUDENTS):
+            assert resource.scope_hook is not None, resource.name

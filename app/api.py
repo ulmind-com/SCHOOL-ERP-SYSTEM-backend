@@ -19,6 +19,7 @@ from app.modules.communication.router import broadcast_router
 from app.modules.communication.router import router as messages_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.documents.router import router as documents_router
+from app.modules.exams.router import router as exams_router
 from app.modules.fees.router import router as fees_router
 from app.modules.library.router import router as library_router
 from app.modules.lms.router import homework_router
@@ -44,6 +45,7 @@ api_router.include_router(people_router)
 api_router.include_router(attendance_router)
 api_router.include_router(fees_router)
 api_router.include_router(documents_router)
+api_router.include_router(exams_router)
 api_router.include_router(settings_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(messages_router)

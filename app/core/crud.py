@@ -19,15 +19,17 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from bson import ObjectId
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, Query, Request, Response
 from pydantic import BaseModel, create_model
 
 from app.core.context import AuthContext, TenantContext
 from app.core.deps import TenantDep, require
 from app.core.exceptions import LimitExceeded, ValidationError
+from app.core.permissions import EXPORT, MODULES_BY_KEY
 from app.db.repository import Repository
-from app.models.base import AppModel, IdResponse, Msg, Page, serialize_doc
+from app.models.base import AppModel, IdResponse, Msg, Page, serialize_doc, utcnow
 from app.utils.audit import diff, record
+from app.utils.sheets import rows_to_csv, rows_to_xlsx
 
 SYSTEM_FIELDS = {
     "id", "_id", "tenant_id", "created_at", "updated_at", "created_by",
@@ -222,6 +224,11 @@ def build_crud_router(resource: Resource) -> APIRouter:
     Creator = Annotated[AuthContext, Depends(require(f"{module}:create"))]
     Updater = Annotated[AuthContext, Depends(require(f"{module}:update"))]
     Deleter = Annotated[AuthContext, Depends(require(f"{module}:delete"))]
+    # Not every module declares an export action; where it does not, being able
+    # to read the list is enough to take a copy of it.
+    _module = MODULES_BY_KEY.get(module)
+    _export_action = EXPORT if _module and EXPORT in _module.actions else "read"
+    Exporter = Annotated[AuthContext, Depends(require(f"{module}:{_export_action}"))]
 
     @router.get("", response_model=Page[dict], summary=f"List {resource.plural.lower()}")
     async def list_items(
@@ -256,6 +263,54 @@ def build_crud_router(resource: Resource) -> APIRouter:
         if resource.serializer:
             result.items = [resource.serializer(item) for item in result.items]
         return result
+
+    # Registered before "/{item_id}" so the literal path wins the match.
+    @router.get("/export", summary=f"Download {resource.plural.lower()} as a spreadsheet")
+    async def export_items(
+        request: Request,
+        auth: Exporter,
+        tenant: TenantDep,
+        search: str = "",
+        sort_by: str | None = None,
+        sort_dir: str | None = None,
+        format: Annotated[str, Query(pattern="^(csv|xlsx)$")] = "csv",
+        limit: Annotated[int, Query(le=20000)] = 5000,
+    ):
+        """The rows behind the list screen, with the same filters applied.
+
+        Exporting what is on screen rather than the whole collection is the
+        point: a user narrows to one section, then wants exactly that.
+        """
+        repo = repo_of(tenant, auth)
+        filters = {
+            key: value
+            for key, value in request.query_params.items()
+            if key in resource.filters
+        }
+        extra = await resource.scope_hook(auth, tenant) if resource.scope_hook else {}
+        query = build_query(resource, search, filters, extra)
+        chosen_sort = sort_by if sort_by in resource.sortable else resource.sortable[0]
+        result = await repo.paginate(
+            query, page=1, page_size=limit, sort_by=chosen_sort,
+            sort_dir=(sort_dir or resource.default_sort_dir),  # type: ignore[arg-type]
+        )
+        items = result.items
+        if resource.serializer:
+            items = [resource.serializer(item) for item in items]
+        await record(auth, f"{resource.name}.export", entity_type=resource.name,
+                     entity_label=f"{len(items)} row(s)", request=request)
+        stamp = utcnow().strftime("%Y-%m-%d")
+        filename = f"{resource.name}-{stamp}.{format}"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if format == "xlsx":
+            return Response(
+                content=rows_to_xlsx(items, resource.plural),
+                media_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+                headers=headers,
+            )
+        return Response(content=rows_to_csv(items), media_type="text/csv", headers=headers)
 
     @router.get("/{item_id}", summary=f"Get one {resource.label.lower()}")
     async def get_item(item_id: str, auth: Reader, tenant: TenantDep):

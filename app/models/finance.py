@@ -41,14 +41,19 @@ class Frequency(StrEnum):
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
     HALF_YEARLY = "half_yearly"
+    SEMESTER = "semester"
     YEARLY = "yearly"
 
 
+#: How many times a year a component at each frequency is billed. Semester and
+#: half-yearly both bill twice but are kept apart because colleges label the
+#: period "Semester 1", not "H1", and the label is what a parent reads.
 INSTALMENTS = {
     Frequency.ONE_TIME: 1,
     Frequency.MONTHLY: 12,
     Frequency.QUARTERLY: 4,
     Frequency.HALF_YEARLY: 2,
+    Frequency.SEMESTER: 2,
     Frequency.YEARLY: 1,
 }
 

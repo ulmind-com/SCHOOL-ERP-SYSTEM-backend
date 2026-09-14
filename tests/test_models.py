@@ -117,6 +117,29 @@ class TestDerivedSchemas:
         instance = schema(first_name="Riya")
         assert instance.admission_number is None
 
+    def test_derived_schema_coerces_what_the_browser_sends(self):
+        """The admission form posts JSON strings; Mongo must receive real types.
+
+        Typing that body as a bare ``dict`` once let a date of birth through as
+        "2005-02-12" and a class id as a string no ObjectId query could match.
+        """
+        schema = make_create_schema(Student, optional={"admission_number"})
+        instance = schema(
+            first_name="Riya",
+            date_of_birth="2005-02-12",
+            current_class_id="6aa6bf077679e658505cda78",
+        )
+        dumped = instance.model_dump(exclude_none=True)
+        assert isinstance(dumped["date_of_birth"], datetime)
+        assert isinstance(dumped["current_class_id"], ObjectId)
+        assert dumped["status"] == "active"
+
+    def test_object_ids_appear_in_the_openapi_document(self):
+        """Without an explicit JSON schema every body holding an id vanished
+        from the OpenAPI document, leaving a dangling $ref behind."""
+        schema = make_create_schema(Student).model_json_schema()
+        assert "string" in str(schema["properties"]["current_class_id"])
+
     def test_update_schema_is_entirely_optional(self):
         schema = make_update_schema(Student)
         assert all(field.default is None for field in schema.model_fields.values())
@@ -176,3 +199,8 @@ class TestAge:
 
     def test_missing_date_of_birth(self):
         assert age_on(None) is None
+
+    def test_date_of_birth_left_as_a_string_by_an_older_write(self):
+        """One malformed row must not turn a profile page into a 500."""
+        assert age_on("2012-01-01", date(2026, 6, 1)) == 14
+        assert age_on("not a date") is None

@@ -57,6 +57,10 @@ services:
         sync: false
       - key: TENANT_BASE_DOMAIN
         sync: false
+      # Same host as CORS_ORIGINS. Emails link back here — a password reset
+      # mail pointing at the API is no use to the person reading it.
+      - key: WEB_APP_URL
+        sync: false
       - key: IMAGEKIT_PUBLIC_KEY
         sync: false
       - key: IMAGEKIT_PRIVATE_KEY

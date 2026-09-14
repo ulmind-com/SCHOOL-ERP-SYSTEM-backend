@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # ── CORS / routing ────────────────────────────────────────────────────
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     tenant_base_domain: str = ""
+    #: Where the browser app lives. Used to build the links inside emails —
+    #: the API has no way to guess it, and a reset mail with a link to the API
+    #: is useless to the person reading it.
+    web_app_url: str = "http://localhost:3000"
 
     # ── ImageKit ──────────────────────────────────────────────────────────
     imagekit_public_key: str = ""

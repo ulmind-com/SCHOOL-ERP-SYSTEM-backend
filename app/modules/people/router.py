@@ -6,9 +6,14 @@ from bson import ObjectId
 from fastapi import APIRouter, Body, Depends, Request
 
 from app.core.context import AuthContext, TenantContext
-from app.core.crud import Resource, build_crud_router
+from app.core.crud import Resource, build_crud_router, check_unique, make_create_schema
 from app.core.deps import TenantDep, require
-from app.core.exceptions import Forbidden, ValidationError
+from app.core.exceptions import ValidationError
+from app.core.scoping import (
+    assert_may_see_student,
+    own_student_scope,
+    student_row_scope,
+)
 from app.db.mongo import C, collection
 from app.db.repository import Repository
 from app.models import people as ppl
@@ -20,20 +25,11 @@ router = APIRouter()
 
 
 # ── Row-level scoping ─────────────────────────────────────────────────────
-async def student_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
-    """A parent sees their own children; a student sees only themselves.
-
-    Applied on top of the tenant filter, so a portal user cannot widen it by
-    guessing query parameters.
-    """
-    if auth.student_id:
-        return {"_id": auth.student_id}
-    if auth.guardian_id:
-        guardian = await collection(C.GUARDIANS).find_one(
-            {"_id": auth.guardian_id, "tenant_id": tenant.id}
-        )
-        return {"_id": {"$in": (guardian or {}).get("student_ids", [])}}
-    return {}
+#: A parent sees their own children; a student sees only themselves. Applied on
+#: top of the tenant filter, so a portal user cannot widen it by guessing query
+#: parameters. Shared with every other student-keyed resource — see
+#: ``app.core.scoping``.
+student_scope = own_student_scope
 
 
 async def staff_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
@@ -104,8 +100,8 @@ def with_name(doc: dict) -> dict:
 STUDENTS = Resource(
     name="students", collection=C.STUDENTS, module="students", model=ppl.Student,
     tags=["Students"],
-    search_fields=["first_name", "last_name", "admission_number", "roll_number",
-                   "contact.phone", "contact.email"],
+    search_fields=["first_name", "middle_name", "last_name", "admission_number",
+                   "roll_number", "contact.phone", "contact.email"],
     filters=["current_class_id", "current_section_id", "status", "gender", "academic_year_id",
              "program_id", "department_id", "house", "category", "is_hosteller",
              "uses_transport", "stream", "semester"],
@@ -142,6 +138,7 @@ ENROLLMENTS = Resource(
     tags=["Students"], filters=["student_id", "academic_year_id", "class_id", "section_id",
                                 "status"],
     sortable=["created_at"],
+    scope_hook=student_row_scope,
 )
 
 APPLICATIONS = Resource(
@@ -180,24 +177,29 @@ class StatusChangeRequest(AppModel):
     reason: str = ""
 
 
+#: The admission form posts a student and a guardian in one body. Both halves go
+#: through the same schemas the plain CRUD endpoints use — typing them as bare
+#: dicts once meant a date of birth reached Mongo as the string the browser sent
+#: and a class id as a string that no ObjectId query could ever match.
+StudentAdmitPayload = make_create_schema(
+    ppl.Student, "StudentAdmitPayload", optional=set(STUDENTS.generated_fields)
+)
+GuardianAdmitPayload = make_create_schema(ppl.Guardian, "GuardianAdmitPayload")
+
+
 class StudentWithGuardianRequest(AppModel):
     """Admitting a student and capturing the parent in one submission — the way
     a front desk actually works."""
 
-    student: dict
-    guardians: list[dict] = []
+    student: StudentAdmitPayload  # type: ignore[valid-type]
+    guardians: list[GuardianAdmitPayload] = []  # type: ignore[valid-type]
     create_login: bool = False
     create_guardian_login: bool = False
 
 
 @students_extra.get("/{student_id}/profile", summary="Full student profile in one call")
 async def profile(student_id: str, auth: Reader, tenant: TenantDep):
-    scope = await student_scope(auth, tenant)
-    if scope:
-        allowed = scope.get("_id")
-        ids = allowed.get("$in", []) if isinstance(allowed, dict) else [allowed]
-        if ObjectId(student_id) not in ids:
-            raise Forbidden("You can only view your own records")
+    await assert_may_see_student(auth, tenant, student_id)
     return await service.student_profile(tenant, student_id)
 
 
@@ -213,13 +215,18 @@ async def create_with_guardians(
     guardians = Repository(C.GUARDIANS, tenant.id, actor_id=auth.user_id)
     await enforce_limit(STUDENTS, tenant, students)
 
-    data = await before_student_create(dict(payload.student), auth, tenant, students)
+    data = await before_student_create(
+        payload.student.model_dump(exclude_none=True), auth, tenant, students
+    )
     data.pop("guardian_ids", None)
+    await check_unique(STUDENTS, students, data)
     student = await students.create(data)
 
     guardian_ids: list[ObjectId] = []
     for raw in payload.guardians:
-        guardian = await guardians.create({**raw, "student_ids": [student["_id"]]})
+        guardian = await guardians.create(
+            {**raw.model_dump(exclude_none=True), "student_ids": [student["_id"]]}
+        )
         guardian_ids.append(guardian["_id"])
         if payload.create_guardian_login and (guardian.get("contact") or {}).get("email"):
             await create_user_for_person(

@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    WithJsonSchema,
     field_serializer,
 )
 
@@ -37,6 +38,10 @@ PyObjectId = Annotated[
     ObjectId,
     BeforeValidator(_validate_object_id),
     PlainSerializer(lambda v: str(v), return_type=str, when_used="json"),
+    # ObjectId is an arbitrary class as far as Pydantic is concerned, so without
+    # this it has no JSON schema at all: every request body containing an id
+    # quietly dropped out of the OpenAPI document, leaving a dangling $ref.
+    WithJsonSchema({"type": "string", "examples": ["65f0c3a2e1b4d2a7c8f01234"]}),
 ]
 
 

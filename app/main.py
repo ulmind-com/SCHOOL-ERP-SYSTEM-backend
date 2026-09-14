@@ -94,6 +94,26 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # Declared *before* the CORS middleware so it ends up inside it. Starlette's
+    # own 500 handling sits outside the whole middleware stack, so an unhandled
+    # exception came back without CORS headers and the browser reported it as a
+    # CORS failure — hiding the actual error from anyone debugging in DevTools.
+    @app.middleware("http")
+    async def catch_unhandled(request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception as exc:  # noqa: BLE001 — deliberately the last resort
+            log.exception("Unhandled error on %s %s", request.method, request.url.path)
+            return ORJSONResponse(
+                status_code=500,
+                content={
+                    "detail": str(exc) if settings.debug else "Something went wrong on our side",
+                    "code": "internal_error",
+                    "meta": {},
+                },
+            )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

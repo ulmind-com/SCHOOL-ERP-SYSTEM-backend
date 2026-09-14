@@ -325,9 +325,20 @@ class Alumni(TenantDocument):
     notes: str = ""
 
 
-def age_on(dob: datetime | None, on: date | None = None) -> int | None:
-    if dob is None:
+def age_on(dob: datetime | str | None, on: date | None = None) -> int | None:
+    """Age in whole years, tolerant of a date of birth stored as a string.
+
+    Documents written before the admission form validated its payload hold an
+    ISO string here. Rather than let one such row turn a profile page into a
+    500, parse what we find and give up quietly if it is not a date at all.
+    """
+    if not dob:
         return None
+    if isinstance(dob, str):
+        try:
+            dob = datetime.fromisoformat(dob.replace("Z", "+00:00"))
+        except ValueError:
+            return None
     on = on or date.today()
     birth = dob.date() if isinstance(dob, datetime) else dob
     return on.year - birth.year - ((on.month, on.day) < (birth.month, birth.day))

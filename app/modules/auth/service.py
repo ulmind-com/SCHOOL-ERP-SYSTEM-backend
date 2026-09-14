@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,6 +33,8 @@ from app.modules.auth.schemas import (
     TokenPair,
 )
 from app.utils.audit import client_ip, record
+
+log = logging.getLogger(__name__)
 
 MAX_FAILED_ATTEMPTS = 8
 LOCKOUT_MINUTES = 15
@@ -385,6 +388,33 @@ async def start_password_reset(email: str, tenant: TenantContext) -> str | None:
     return token
 
 
+async def email_password_reset(email: str, token: str) -> None:
+    """Send the reset link, and never let a mail failure answer the caller.
+
+    The endpoint replies the same way whether or not the address exists, so an
+    exception escaping here would itself disclose that the account is real.
+    """
+    from app.modules.communication.notify import _send_email
+
+    link = f"{settings.web_app_url.rstrip('/')}/reset-password?token={token}"
+    try:
+        await _send_email(
+            email,
+            "Reset your password",
+            "Someone asked to reset the password on your account.\n\n"
+            f"Choose a new one here — the link is good for one hour:\n{link}\n\n"
+            "If that was not you, nothing has changed and you can ignore this.",
+            html=(
+                "<p>Someone asked to reset the password on your account.</p>"
+                f'<p><a href="{link}">Choose a new password</a> — '
+                "the link is good for one hour.</p>"
+                "<p>If that was not you, nothing has changed and you can ignore this.</p>"
+            ),
+        )
+    except Exception:
+        log.exception("Could not send the password reset mail")
+
+
 async def finish_password_reset(token: str, new_password: str) -> None:
     from app.core.security import decode_token
 
@@ -451,7 +481,8 @@ def temporary_password() -> str:
 __all__ = [
     "accept_invite", "authenticate", "authenticate_platform", "build_auth_context",
     "build_navigation", "change_password", "create_invite_token",
-    "find_institutions_for_email", "finish_password_reset", "resolve_login_tenant",
+    "email_password_reset", "find_institutions_for_email", "finish_password_reset",
+    "resolve_login_tenant",
     "revoke_all_sessions", "revoke_session", "rotate_refresh_token", "session_institution",
     "session_user", "start_password_reset", "temporary_password", "validate_password",
 ]

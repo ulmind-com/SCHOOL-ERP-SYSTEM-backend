@@ -27,6 +27,41 @@ MONTH_NAMES = [
     "July", "August", "September", "October", "November", "December",
 ]
 
+#: A run bills one cycle at a time. "all" is the escape hatch for institutions
+#: that raise a single invoice for the whole year and settle it in one go.
+BILLING_CYCLES = ("all", "one_time", "monthly", "quarterly", "half_yearly", "semester", "yearly")
+
+
+def period_label_for(cycle: str, on: date, index: int | None = None) -> str:
+    """The name a parent sees on the invoice.
+
+    Derived from the cycle rather than typed, so two runs for the same month
+    produce the same label — which is what stops a student being billed twice.
+    """
+    if cycle == "monthly":
+        return f"{MONTH_NAMES[on.month - 1]} {on.year}"
+    if cycle == "quarterly":
+        return f"Quarter {index or ((on.month - 1) // 3) + 1} · {on.year}"
+    if cycle == "half_yearly":
+        return f"{'First' if (index or (1 if on.month <= 6 else 2)) == 1 else 'Second'} Half · {on.year}"
+    if cycle == "semester":
+        return f"Semester {index or (1 if on.month <= 6 else 2)} · {on.year}"
+    if cycle == "one_time":
+        return f"One-time charges · {on.year}"
+    return f"Full Year {on.year}"
+
+
+def _due_date_for(cycle: str, components: list[dict], on: date, fallback: date) -> date:
+    """Honour the structure's own due day where the components agree on one."""
+    days = {int(c.get("due_day") or 0) for c in components if c.get("due_day")}
+    if cycle != "monthly" or len(days) != 1:
+        return fallback
+    day = min(max(days.pop(), 1), 28)
+    try:
+        return on.replace(day=day)
+    except ValueError:
+        return fallback
+
 
 # ── Numbering ─────────────────────────────────────────────────────────────
 async def next_invoice_number(tenant: TenantContext) -> str:
@@ -106,13 +141,22 @@ async def generate_invoices(
     student_ids: list[str] | None = None,
     period_label: str | None = None,
     due_date: date | None = None,
+    cycle: str = "all",
+    period_index: int | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Raise one invoice per student for a billing period.
 
+    ``cycle`` picks which components are billed: a monthly run raises only the
+    monthly lines, a semester run only the semester lines. That is what lets one
+    structure carry a monthly tuition, a yearly lab fee and a one-time admission
+    charge without any of them being billed on the wrong schedule.
+
     Re-running for the same period is safe: a student who already has an
     invoice for that label is skipped rather than double-billed.
     """
+    if cycle not in BILLING_CYCLES:
+        raise ValidationError(f"Billing cycle must be one of: {', '.join(BILLING_CYCLES)}")
     structure = await collection(C.FEE_STRUCTURES).find_one(
         {"_id": ObjectId(fee_structure_id), "tenant_id": tenant.id,
          "is_deleted": {"$ne": True}}
@@ -137,8 +181,21 @@ async def generate_invoices(
     if not students:
         raise ValidationError("No active students matched that selection")
 
-    label = period_label or "Full Year"
-    due = due_date or (date.today() + timedelta(days=15))
+    today = date.today()
+    label = period_label or period_label_for(cycle, today, period_index)
+    billable = [
+        component
+        for component in structure.get("components", [])
+        if cycle == "all" or (component.get("frequency") or "monthly") == cycle
+    ]
+    if not billable:
+        raise ValidationError(
+            f"'{structure.get('name', 'This structure')}' has no {cycle.replace('_', ' ')} "
+            "components to bill. Pick a different cycle."
+        )
+    due = due_date or _due_date_for(
+        cycle, billable, today, today + timedelta(days=15)
+    )
     year_id = ObjectId(academic_year_id)
     invoices = Repository(C.FEE_INVOICES, tenant.id, actor_id=auth.user_id)
 
@@ -161,7 +218,7 @@ async def generate_invoices(
         concession = float(student.get("fee_concession_percent") or 0)
 
         lines, subtotal, discount_total = [], 0.0, 0.0
-        for component in structure.get("components", []):
+        for component in billable:
             if not _student_is_billed_for(student, component):
                 continue
             amount = money(component.get("amount"))
@@ -219,6 +276,9 @@ async def generate_invoices(
 
     return {
         "dry_run": dry_run,
+        "cycle": cycle,
+        "period_label": label,
+        "due_date": due.isoformat(),
         "matched": len(students),
         "created": created,
         "skipped_existing": skipped,

@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.core.crud import Resource, build_crud_router
+from app.core.scoping import student_row_scope
 from app.db.mongo import C
 from app.models import academics as ac
 from app.models import communication as comm
@@ -104,6 +105,7 @@ RESOURCES: list[Resource] = [
         label="Alumnus", plural="Alumni", tags=["People"],
         search_fields=["full_name", "current_organization", "program_name"],
         filters=["batch_year", "is_mentor"], sortable=["batch_year", "full_name"],
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="admission-enquiries", collection=C.ADMISSION_ENQUIRIES, module="admissions",
@@ -134,6 +136,7 @@ RESOURCES: list[Resource] = [
         filters=["type", "status", "student_id", "staff_id"],
         sortable=["issued_on", "created_at"], unique_fields=["serial_number"],
         generated_fields=["serial_number"],
+        scope_hook=student_row_scope,
     ),
 
     # ── Finance ───────────────────────────────────────────────────────────
@@ -155,6 +158,7 @@ RESOURCES: list[Resource] = [
         search_fields=["name", "code", "reason"],
         filters=["student_id", "status", "type", "academic_year_id"],
         sortable=["created_at"], unique_fields=["code"],
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="expenses", collection=C.EXPENSES, module="expenses", model=fin.Expense,
@@ -199,6 +203,7 @@ RESOURCES: list[Resource] = [
         label="Mark", plural="Marks", tags=["Exams"],
         filters=["exam_id", "student_id", "subject_id", "section_id", "class_id"],
         sortable=["created_at"],
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="exam-schedules", collection=C.EXAM_SCHEDULES, module="exams",
@@ -211,6 +216,7 @@ RESOURCES: list[Resource] = [
         model=ops.ReportCard, label="Report Card", plural="Report Cards",
         tags=["Results"], filters=["student_id", "exam_id", "class_id", "section_id", "result"],
         sortable=["created_at"], read_only=True,
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="appraisals", collection=C.APPRAISALS, module="appraisals", model=hr.Appraisal,
@@ -251,6 +257,7 @@ RESOURCES: list[Resource] = [
         name="transport/allocations", collection=C.TRANSPORT_ALLOCATIONS, module="transport",
         model=fac.TransportAllocation, label="Allocation", plural="Transport Allocations",
         tags=["Transport"], filters=["student_id", "route_id", "status", "academic_year_id"],
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="hostel/blocks", collection=C.HOSTELS, module="hostel", model=fac.Hostel,
@@ -268,6 +275,7 @@ RESOURCES: list[Resource] = [
         name="hostel/allocations", collection=C.HOSTEL_ALLOCATIONS, module="hostel",
         model=fac.HostelAllocation, label="Allocation", plural="Hostel Allocations",
         tags=["Hostel"], filters=["student_id", "hostel_id", "room_id", "status"],
+        scope_hook=student_row_scope,
     ),
     Resource(
         name="inventory/items", collection=C.INVENTORY_ITEMS, module="inventory",

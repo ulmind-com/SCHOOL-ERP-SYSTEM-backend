@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.context import AuthContext
 from app.core.crud import Resource, build_crud_router
 from app.core.deps import TenantDep, require
+from app.core.scoping import assert_may_see_student, student_row_scope
 from app.db.mongo import C
 from app.models import finance as fin
 from app.models.base import AppModel
@@ -23,6 +24,9 @@ INVOICES = Resource(
              "fee_structure_id", "period_label"],
     sortable=["due_date", "issue_date", "created_at", "total"],
     unique_fields=["number"], generated_fields=["number"],
+    # Students and parents hold invoices:read for their own bills; without this
+    # the same permission would list the whole school's.
+    scope_hook=student_row_scope,
 )
 PAYMENTS = Resource(
     name="payments", collection=C.PAYMENTS, module="payments", model=fin.Payment,
@@ -32,6 +36,7 @@ PAYMENTS = Resource(
     sortable=["paid_at", "created_at", "amount"],
     unique_fields=["receipt_number"], generated_fields=["receipt_number"],
     read_only=True,  # money moves through /fees/collect, never a bare POST
+    scope_hook=student_row_scope,
 )
 PAYROLL_RUNS = Resource(
     name="payroll/runs", collection=C.PAYROLL_RUNS, module="payroll", model=fin.PayrollRun,
@@ -65,6 +70,12 @@ class GenerateInvoicesRequest(AppModel):
     student_ids: list[str] | None = None
     period_label: str | None = None
     due_date: date | None = None
+    #: Which components to bill — "monthly", "semester", "yearly"… or "all" for
+    #: a single invoice covering every component in the structure.
+    cycle: str = "all"
+    #: Which instalment of that cycle this is (Quarter 2, Semester 1). Only used
+    #: to build the period label; today's date decides when it is omitted.
+    period_index: int | None = None
     dry_run: bool = False
 
 
@@ -94,6 +105,8 @@ async def generate(
         student_ids=payload.student_ids,
         period_label=payload.period_label,
         due_date=payload.due_date,
+        cycle=payload.cycle,
+        period_index=payload.period_index,
         dry_run=payload.dry_run,
     )
     if not payload.dry_run:
@@ -126,6 +139,7 @@ async def collect(
 
 @fees.get("/ledger/{student_id}", summary="A student's invoices and receipts")
 async def ledger(student_id: str, auth: Reader, tenant: TenantDep):
+    await assert_may_see_student(auth, tenant, student_id)
     return await service.student_ledger(tenant, student_id)
 
 

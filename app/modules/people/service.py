@@ -14,30 +14,68 @@ from app.db.repository import Repository, next_sequence
 from app.models.base import serialize_doc, utcnow
 from app.models.people import age_on
 
-
 # ── Identifier generation ─────────────────────────────────────────────────
+#: How many times a generator will step past an id that is already taken before
+#: giving up. The counter is atomic, so a collision only happens when rows
+#: arrived some other way — an import, a seed, or an id typed in by hand — and a
+#: handful of steps clears any realistic overlap.
+MAX_ID_ATTEMPTS = 50
+
+
+async def _free_id(
+    tenant_id: ObjectId, collection_name: str, field: str, build
+) -> str:
+    """Step the counter until the id it produces is genuinely unused.
+
+    Without this, a school that imported its existing staff list gets a
+    generator counting from one straight into ids that already exist, and every
+    new record is rejected as a duplicate with nothing the user can do about it.
+    """
+    for _ in range(MAX_ID_ATTEMPTS):
+        candidate = await build()
+        taken = await collection(collection_name).find_one(
+            {"tenant_id": tenant_id, field: candidate, "is_deleted": {"$ne": True}},
+            projection={"_id": 1},
+        )
+        if taken is None:
+            return candidate
+    raise ValidationError(
+        f"Could not allocate a free {field.replace('_', ' ')}. "
+        "Set the numbering prefix in Settings, or enter one by hand."
+    )
+
+
 async def generate_admission_number(tenant: TenantContext) -> str:
     """``<prefix><year><0001>`` — configurable per institution, sequential and
-    collision-free because the counter increments atomically."""
+    checked against the collection so an imported roll cannot block it."""
     conf = tenant.settings.get("admission_number", {}) if tenant.settings else {}
     prefix = conf.get("prefix", "ADM")
     include_year = conf.get("include_year", True)
     width = int(conf.get("width", 4))
     year = datetime.now(UTC).year
-    seq = await next_sequence(tenant.id, f"admission:{year}" if include_year else "admission")
-    parts = [prefix]
-    if include_year:
-        parts.append(str(year))
-    parts.append(str(seq).zfill(width))
-    return "".join(parts)
+    key = f"admission:{year}" if include_year else "admission"
+
+    async def build() -> str:
+        seq = await next_sequence(tenant.id, key)
+        parts = [prefix]
+        if include_year:
+            parts.append(str(year))
+        parts.append(str(seq).zfill(width))
+        return "".join(parts)
+
+    return await _free_id(tenant.id, C.STUDENTS, "admission_number", build)
 
 
 async def generate_employee_id(tenant: TenantContext) -> str:
     conf = tenant.settings.get("employee_id", {}) if tenant.settings else {}
     prefix = conf.get("prefix", "EMP")
     width = int(conf.get("width", 4))
-    seq = await next_sequence(tenant.id, "employee")
-    return f"{prefix}{str(seq).zfill(width)}"
+
+    async def build() -> str:
+        seq = await next_sequence(tenant.id, "employee")
+        return f"{prefix}{str(seq).zfill(width)}"
+
+    return await _free_id(tenant.id, C.STAFF, "employee_id", build)
 
 
 async def next_roll_number(tenant_id: ObjectId, section_id: ObjectId | None) -> str:
@@ -125,6 +163,10 @@ async def student_profile(tenant: TenantContext, student_id: str) -> dict[str, A
     # Attendance this academic year
     out["attendance"] = await attendance_summary(tenant.id, _id)
 
+    # Day-by-day attendance, for the calendar on the profile. A percentage
+    # tells you there is a problem; the calendar tells you it is every Monday.
+    out["attendance_days"] = await attendance_calendar(tenant.id, _id)
+
     # Fees
     out["fees"] = await fee_summary(tenant.id, _id)
 
@@ -133,6 +175,20 @@ async def student_profile(tenant: TenantContext, student_id: str) -> dict[str, A
         {"tenant_id": tenant.id, "student_id": _id, "is_deleted": {"$ne": True}}
     ).sort([("created_at", -1)]).limit(5).to_list(length=5)
     out["report_cards"] = [serialize_doc(c) for c in cards]
+
+    # Marks, grouped by exam. Report cards only exist once results are
+    # published; a parent checking after a class test wants to see the marks
+    # that were entered, not an empty screen.
+    out["exam_results"] = await exam_results(tenant.id, _id)
+
+    # Files filed against this student — certificates, photographs, transfers.
+    out["documents"] = [
+        serialize_doc(d)
+        for d in await collection(C.DOCUMENTS).find(
+            {"tenant_id": tenant.id, "owner_type": "student", "owner_id": _id,
+             "is_deleted": {"$ne": True}}
+        ).sort([("created_at", -1)]).to_list(length=100)
+    ]
 
     # Login
     user = await collection(C.USERS).find_one(
@@ -143,6 +199,98 @@ async def student_profile(tenant: TenantContext, student_id: str) -> dict[str, A
          "last_login_at": user.get("last_login_at")}
         if user else None
     )
+    return out
+
+
+async def attendance_calendar(
+    tenant_id: ObjectId, student_id: ObjectId, days: int = 400
+) -> list[dict[str, Any]]:
+    """One entry per marked day, oldest first.
+
+    Capped at a little over a year: that is what the calendar draws, and a
+    student with ten years of history should not have all of it serialised into
+    every profile request.
+    """
+    rows = await collection(C.ATTENDANCE).find(
+        {"tenant_id": tenant_id, "student_id": student_id, "session_key": "day",
+         "is_deleted": {"$ne": True}},
+        projection={"date": 1, "status": 1, "remark": 1},
+    ).sort([("date", -1)]).to_list(length=days)
+    out = []
+    for row in reversed(rows):
+        date_value = row.get("date")
+        if not date_value:
+            continue
+        out.append({
+            "date": date_value.date().isoformat() if hasattr(date_value, "date")
+            else str(date_value)[:10],
+            "status": row.get("status", ""),
+            "remark": row.get("remark", ""),
+        })
+    return out
+
+
+async def exam_results(tenant_id: ObjectId, student_id: ObjectId) -> list[dict[str, Any]]:
+    """Every mark this student has, grouped under the exam it belongs to."""
+    marks = await collection(C.MARKS).find(
+        {"tenant_id": tenant_id, "student_id": student_id, "is_deleted": {"$ne": True}}
+    ).to_list(length=1000)
+    if not marks:
+        return []
+
+    exam_ids = {m.get("exam_id") for m in marks if m.get("exam_id")}
+    subject_ids = {m.get("subject_id") for m in marks if m.get("subject_id")}
+    exams = {
+        e["_id"]: e
+        for e in await collection(C.EXAMS).find({"_id": {"$in": list(exam_ids)}}).to_list(None)
+    }
+    subjects = {
+        s["_id"]: s
+        for s in await collection(C.SUBJECTS).find(
+            {"_id": {"$in": list(subject_ids)}}
+        ).to_list(None)
+    }
+
+    grouped: dict[Any, dict[str, Any]] = {}
+    for mark in marks:
+        exam = exams.get(mark.get("exam_id")) or {}
+        bucket = grouped.setdefault(mark.get("exam_id"), {
+            "exam_id": str(mark.get("exam_id") or ""),
+            "exam_name": exam.get("name", "Examination"),
+            "exam_type": exam.get("type", ""),
+            "status": exam.get("status", ""),
+            "subjects": [],
+            "obtained": 0.0,
+            "max_marks": 0.0,
+        })
+        subject = subjects.get(mark.get("subject_id")) or {}
+        obtained = mark.get("total_marks")
+        if obtained is None:
+            obtained = mark.get("marks_obtained")
+        maximum = float(mark.get("max_marks") or 0)
+        bucket["subjects"].append({
+            "subject_id": str(mark.get("subject_id") or ""),
+            "subject_name": subject.get("name", "Subject"),
+            "code": subject.get("code", ""),
+            "marks_obtained": obtained,
+            "max_marks": maximum,
+            "percentage": mark.get("percentage"),
+            "grade": mark.get("grade", ""),
+            "is_pass": mark.get("is_pass"),
+        })
+        if obtained is not None:
+            bucket["obtained"] += float(obtained)
+            bucket["max_marks"] += maximum
+
+    out = []
+    for bucket in grouped.values():
+        bucket["subjects"].sort(key=lambda s: s["subject_name"])
+        bucket["percentage"] = (
+            round(bucket["obtained"] / bucket["max_marks"] * 100, 2)
+            if bucket["max_marks"] else None
+        )
+        out.append(bucket)
+    out.sort(key=lambda b: b["exam_name"])
     return out
 
 

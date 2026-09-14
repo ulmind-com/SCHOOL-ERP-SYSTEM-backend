@@ -1,5 +1,7 @@
 """Fee arithmetic. Money is the part a school will notice us getting wrong."""
 
+from datetime import date
+
 import pytest
 from bson import ObjectId
 
@@ -14,9 +16,11 @@ from app.models.finance import (
     money,
 )
 from app.modules.fees.service import (
+    _due_date_for,
     _student_is_billed_for,
     discount_for_line,
     instalment_labels,
+    period_label_for,
 )
 
 
@@ -139,3 +143,36 @@ class TestPayroll:
 )
 def test_money_rounds_to_paise(value, expected):
     assert money(value) == expected
+
+
+class TestBillingCycles:
+    """A structure carries lines on different schedules; a run bills one."""
+
+    def test_semester_counts_as_two_instalments(self):
+        structure = FeeStructure(
+            tenant_id=ObjectId(), name="BSc Year 1", academic_year_id=ObjectId(),
+            components=[FeeComponent(fee_head_id="1", amount=40000, frequency="semester")],
+        )
+        assert structure.annual_total == 80000
+
+    def test_period_label_names_the_month(self):
+        assert period_label_for("monthly", date(2026, 9, 14)) == "September 2026"
+
+    def test_period_label_names_the_semester(self):
+        assert period_label_for("semester", date(2026, 9, 14)) == "Semester 2 · 2026"
+        assert period_label_for("semester", date(2026, 3, 1), 1) == "Semester 1 · 2026"
+
+    def test_yearly_run_and_monthly_run_get_different_labels(self):
+        """Two runs on the same day must not collide on the skip check."""
+        on = date(2026, 4, 2)
+        assert period_label_for("yearly", on) != period_label_for("monthly", on)
+
+    def test_monthly_due_date_follows_the_components_due_day(self):
+        components = [{"due_day": 10}, {"due_day": 10}]
+        due = _due_date_for("monthly", components, date(2026, 9, 1), date(2026, 9, 30))
+        assert due == date(2026, 9, 10)
+
+    def test_due_day_is_ignored_when_components_disagree(self):
+        components = [{"due_day": 5}, {"due_day": 20}]
+        fallback = date(2026, 9, 30)
+        assert _due_date_for("monthly", components, date(2026, 9, 1), fallback) == fallback

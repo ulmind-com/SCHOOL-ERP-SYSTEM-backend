@@ -24,6 +24,9 @@ class NavItem:
     badge: str = ""
     #: Restrict to certain portals; empty means any.
     portals: tuple[str, ...] = ()
+    #: Hide from these portals. A student holds ``invoices:read`` for their own
+    #: bill, which is not a reason to show them the bursar's invoice register.
+    not_portals: tuple[str, ...] = ()
 
     @property
     def module_key(self) -> str:
@@ -36,6 +39,9 @@ class NavGroup:
     items: tuple[NavItem, ...]
 
 
+#: The portals that see their own records rather than the institution's.
+FAMILY = ("student", "parent")
+
 NAVIGATION: tuple[NavGroup, ...] = (
     NavGroup("Main Menu", (
         NavItem("dashboard", "Dashboard", "/dashboard", "layout-grid", "dashboard:read"),
@@ -46,6 +52,8 @@ NAVIGATION: tuple[NavGroup, ...] = (
         NavItem("exams", "Exams", "/exams", "file-badge", "exams:read"),
         NavItem("results", "Results", "/results", "trophy", "results:read"),
         NavItem("assistant", "Assistant", "/assistant", "sparkles", "dashboard:read"),
+        NavItem("my-fees", "Fees & Payments", "/portal/fees", "wallet", "invoices:read",
+                module="invoices", portals=FAMILY),
     )),
     NavGroup("People", (
         NavItem("staff", "Staff & Teachers", "/staff", "briefcase", "staff:read"),
@@ -67,8 +75,10 @@ NAVIGATION: tuple[NavGroup, ...] = (
     )),
     NavGroup("Finance", (
         NavItem("fees", "Fee Structures", "/finance/fees", "receipt", "fees:read"),
-        NavItem("invoices", "Invoices", "/finance/invoices", "file-text", "invoices:read"),
-        NavItem("payments", "Collection", "/finance/payments", "wallet", "payments:read"),
+        NavItem("invoices", "Invoices", "/finance/invoices", "file-text", "invoices:read",
+                not_portals=FAMILY),
+        NavItem("payments", "Collection", "/finance/payments", "wallet", "payments:read",
+                not_portals=FAMILY),
         NavItem("scholarships", "Scholarships", "/finance/scholarships", "badge-percent",
                 "scholarships:read"),
         NavItem("expenses", "Expenses", "/finance/expenses", "trending-down", "expenses:read"),
@@ -142,6 +152,7 @@ def build_navigation(auth: AuthContext, tenant: TenantContext | None) -> list[di
             for item in group.items
             if auth.can(item.permission)
             and (not item.portals or auth.portal in item.portals)
+            and auth.portal not in item.not_portals
             and (auth.is_platform or tenant is None or tenant.module_enabled(item.module_key))
         ]
         if items:
