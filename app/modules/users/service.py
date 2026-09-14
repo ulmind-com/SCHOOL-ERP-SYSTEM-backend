@@ -537,11 +537,42 @@ async def send_credentials(
             ),
         }
 
+    # An account that was never activated needs the invitation again, not a
+    # password reset: the invitation is what carries the link that lets them
+    # choose their own password in the first place.
+    if existing.get("status") == "invited":
+        temp = temporary_password()
+        await collection(C.USERS).update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"password_hash": hash_password(temp), "must_change_password": True,
+                      "updated_at": utcnow()},
+             "$unset": {"locked_until": "", "failed_login_attempts": ""}},
+        )
+        token = await create_invite_token(existing["_id"], tenant.id)
+        await send_invite_mail(
+            to=email, full_name=existing.get("full_name", ""), tenant=tenant,
+            token=token, temporary_password=temp,
+        )
+        return {
+            "id": str(existing["_id"]),
+            "created": False,
+            "reinvited": True,
+            "email": email,
+            **({} if settings.email_enabled else {"temporary_password": temp}),
+            "email_sent": settings.email_enabled,
+            "detail": (
+                f"The invitation has been sent to {email} again."
+                if settings.email_enabled
+                else "No email provider is configured, so share the temporary password yourself."
+            ),
+        }
+
     reset = await reset_user_password(tenant, str(existing["_id"]))
     return {
         **reset,
         "id": str(existing["_id"]),
         "created": False,
+        "reinvited": False,
         "email": email,
         "detail": (
             f"A new password has been emailed to {email}."
