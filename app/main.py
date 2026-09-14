@@ -7,6 +7,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
+from bson.errors import InvalidId
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -103,6 +104,12 @@ def create_app() -> FastAPI:
     async def catch_unhandled(request: Request, call_next):
         try:
             return await call_next(request)
+        except InvalidId:
+            return ORJSONResponse(
+                status_code=422,
+                content={"detail": "That identifier is not valid",
+                         "code": "invalid_id", "meta": {}},
+            )
         except Exception as exc:  # noqa: BLE001 — deliberately the last resort
             log.exception("Unhandled error on %s %s", request.method, request.url.path)
             return ORJSONResponse(
@@ -165,6 +172,20 @@ def create_app() -> FastAPI:
                 "code": "validation_error",
                 "meta": {"fields": fields},
             },
+        )
+
+    @app.exception_handler(InvalidId)
+    async def invalid_id_handler(request: Request, exc: InvalidId):
+        """An unparseable id is a bad request, not a server fault.
+
+        Ids reach ObjectId() from paths and query strings all over the API;
+        catching it once here is the difference between a clear 422 and a 500
+        with a stack trace in the logs for every mistyped URL.
+        """
+        return ORJSONResponse(
+            status_code=422,
+            content={"detail": "That identifier is not valid",
+                     "code": "invalid_id", "meta": {}},
         )
 
     @app.exception_handler(Exception)

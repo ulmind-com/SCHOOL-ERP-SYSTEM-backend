@@ -117,6 +117,20 @@ class TestNavigation:
         }
         assert rendered == defined
 
+    def test_a_student_gets_their_own_record_not_the_class_register(self):
+        """The administrative screens are built around a class picker; a
+        student holds attendance:read for their own register, not the class's."""
+        tenant = self._tenant(deployment="dedicated")
+        student = AuthContext(
+            user_id=ObjectId(), email="s@b.c", full_name="S",
+            permissions=expand(["attendance:read", "results:read", "invoices:read"]),
+            portal="student",
+        )
+        keys = {i["key"] for g in build_navigation(student, tenant) for i in g["items"]}
+        assert {"my-record", "my-fees"} <= keys
+        assert "attendance" not in keys
+        assert "results" not in keys
+
     def test_a_parent_gets_their_own_fee_screen_not_the_bursars(self):
         """Both hang off invoices:read; only the portal tells them apart."""
         tenant = self._tenant(deployment="dedicated")

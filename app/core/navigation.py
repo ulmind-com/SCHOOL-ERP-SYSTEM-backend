@@ -46,14 +46,22 @@ NAVIGATION: tuple[NavGroup, ...] = (
     NavGroup("Main Menu", (
         NavItem("dashboard", "Dashboard", "/dashboard", "layout-grid", "dashboard:read"),
         NavItem("students", "Students", "/students", "users", "students:read"),
-        NavItem("attendance", "Attendance", "/attendance", "check-square", "attendance:read"),
+        # A family's own record, with attendance, marks and files on one screen.
+        # The administrative Attendance and Results screens below are built
+        # around a class picker and are no use to them — so they get these and
+        # not those.
+        NavItem("my-record", "My Record", "/portal/me", "user", "attendance:read",
+                module="attendance", portals=FAMILY),
+        NavItem("attendance", "Attendance", "/attendance", "check-square", "attendance:read",
+                not_portals=FAMILY),
         NavItem("timetable", "Timetable", "/timetable", "calendar-clock", "timetable:read"),
         NavItem("assignments", "Assignments", "/assignments", "clipboard-list", "assignments:read"),
         NavItem("exams", "Exams", "/exams", "file-badge", "exams:read"),
-        NavItem("results", "Results", "/results", "trophy", "results:read"),
-        NavItem("assistant", "Assistant", "/assistant", "sparkles", "dashboard:read"),
+        NavItem("results", "Results", "/results", "trophy", "results:read",
+                not_portals=FAMILY),
         NavItem("my-fees", "Fees & Payments", "/portal/fees", "wallet", "invoices:read",
                 module="invoices", portals=FAMILY),
+        NavItem("assistant", "Assistant", "/assistant", "sparkles", "dashboard:read"),
     )),
     NavGroup("People", (
         NavItem("staff", "Staff & Teachers", "/staff", "briefcase", "staff:read"),

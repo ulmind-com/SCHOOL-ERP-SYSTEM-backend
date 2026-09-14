@@ -29,6 +29,7 @@ from app.modules.payroll.router import router as payroll_router
 from app.modules.people.router import router as people_router
 from app.modules.platform.router import public_router
 from app.modules.platform.router import router as platform_router
+from app.modules.portal.router import router as portal_router
 from app.modules.printing.router import router as printing_router
 from app.modules.registry import build_registry_router
 from app.modules.reports.router import router as reports_router
@@ -61,6 +62,7 @@ api_router.include_router(printing_router)
 api_router.include_router(live_classes_router)
 api_router.include_router(homework_router)
 api_router.include_router(users_router)
+api_router.include_router(portal_router)
 
 # ── SaaS-only ─────────────────────────────────────────────────────────────
 if settings.is_saas:
