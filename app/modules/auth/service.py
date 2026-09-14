@@ -459,6 +459,63 @@ async def accept_invite(token: str, password: str, full_name: str | None = None)
     return await collection(C.USERS).find_one({"_id": user_id})  # type: ignore[return-value]
 
 
+async def tenant_for_user(user: dict) -> TenantContext:
+    """The institution a user belongs to, read from the record rather than the
+    request — used where there is no session or header to go on."""
+    doc = await load_tenant_doc(tenant_id=str(user.get("tenant_id")))
+    if doc is None:
+        raise Unauthorized("This account's institution is no longer available")
+    return build_context(doc)
+
+
+async def invite_preview(token: str) -> dict[str, Any]:
+    """What the invitation screen needs before a password exists.
+
+    Deliberately thin: a first name, the masked address it was sent to and the
+    institution. Anyone holding the link already has the link.
+    """
+    from app.core.security import decode_token
+
+    payload = decode_token(token, "invite")
+    invalid = {"valid": False,
+               "detail": "This invitation has expired or has already been used."}
+    if payload is None:
+        return invalid
+
+    user = await collection(C.USERS).find_one({"_id": ObjectId(payload["sub"])})
+    if user is None or user.get("invite_token_hash") != fingerprint(token):
+        return invalid
+
+    tenant = await load_tenant_doc(tenant_id=str(user.get("tenant_id")))
+    role_names = [
+        r.get("name", "")
+        for r in await collection(C.ROLES).find(
+            {"_id": {"$in": user.get("role_ids") or []}}
+        ).to_list(length=None)
+    ]
+    return {
+        "valid": True,
+        "full_name": user.get("full_name", ""),
+        "email": mask_email(user.get("email", "")),
+        "roles": role_names,
+        "institution": {
+            "name": (tenant or {}).get("name", ""),
+            "slug": (tenant or {}).get("slug", ""),
+            "logo_url": (((tenant or {}).get("branding") or {}).get("logo") or {}).get("url", ""),
+        },
+    }
+
+
+def mask_email(email: str) -> str:
+    """``r****a@gmail.com`` — enough to recognise, not enough to harvest."""
+    name, _, domain = email.partition("@")
+    if not domain:
+        return email
+    if len(name) <= 2:
+        return f"{name[:1]}*@{domain}"
+    return f"{name[0]}{'*' * (len(name) - 2)}{name[-1]}@{domain}"
+
+
 async def create_invite_token(user_id: ObjectId, tenant_id: ObjectId) -> str:
     token = create_token(str(user_id), "invite", tenant_id=str(tenant_id))
     await collection(C.USERS).update_one(

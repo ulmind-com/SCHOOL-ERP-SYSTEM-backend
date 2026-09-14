@@ -7,6 +7,7 @@ a user into a 500, and the delivery attempt is logged either way.
 """
 
 import logging
+from urllib.parse import quote
 
 from app.core.config import settings
 from app.core.context import TenantContext
@@ -105,7 +106,7 @@ async def send_temporary_password(
                     "<span style='color:#6b6f76;font-size:13px'>If this was not expected, "
                     "tell the school office.</span>",
                 ],
-                button=("Sign in", _link("/login")),
+                button=("Sign in", _link(f"/login?email={quote(to)}")),
             ),
         )
     except Exception:

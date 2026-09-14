@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Request, status
 
 from app.core.config import settings
-from app.core.deps import CurrentUser, OptionalTenantDep, TenantDep
-from app.core.exceptions import Forbidden, Unauthorized
+from app.core.deps import CurrentUser, OptionalTenantDep
+from app.core.exceptions import Unauthorized
 from app.core.navigation import build_navigation
 from app.core.security import decode_token
 from app.db.mongo import C, collection
@@ -128,11 +128,25 @@ async def reset_password(payload: ResetPasswordRequest):
     return Msg(detail="Password set. You can sign in now.")
 
 
+@router.get("/invite/{token}", summary="Who an invitation is for")
+async def invite_preview(token: str):
+    """Read before the password is set, so the screen can greet the person by
+    name and say which institution this is. Public by necessity — they have no
+    session yet — and it reveals nothing the holder of the link does not have.
+    """
+    return await service.invite_preview(token)
+
+
 @router.post("/accept-invite", response_model=LoginResponse, summary="Activate an invited account")
-async def accept_invite(payload: AcceptInviteRequest, request: Request, tenant: TenantDep):
+async def accept_invite(payload: AcceptInviteRequest, request: Request):
+    """The institution comes from the invitation itself.
+
+    Requiring a tenant header here meant the link in the email only worked from
+    a subdomain — and the email is the one place we cannot control where it is
+    opened from.
+    """
     user = await service.accept_invite(payload.token, payload.password, payload.full_name)
-    if user.get("tenant_id") != tenant.id:
-        raise Forbidden("This invitation belongs to a different institution")
+    tenant = await service.tenant_for_user(user)
     auth = await service.build_auth_context(user, tenant.id)
     tokens = await service._issue_tokens(user["_id"], tenant_id=tenant.id, request=request)
     return LoginResponse(
