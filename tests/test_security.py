@@ -187,6 +187,35 @@ class TestRowScoping:
         for fn in (get_register, loans, my_assignments):
             assert "family_student_ids" in inspect.getsource(fn), fn.__name__
 
+    def test_a_family_is_not_handed_the_class_s_assignment_list(self):
+        """``assignments:read`` is what shows a parent their own child's
+        homework. Read unscoped it was the whole institution's — every class,
+        and the drafts a teacher was still writing."""
+        from app.core.scoping import family_assignment_scope
+
+        auth = self._auth(portal="parent")
+        scope = asyncio.run(family_assignment_scope(auth, _tenant()))
+        assert scope == {"_id": {"$in": []}}
+
+        staff = self._auth(portal="admin", permissions=["*"])
+        assert asyncio.run(family_assignment_scope(staff, _tenant())) == {}
+
+    def test_the_assignments_resource_is_scoped(self):
+        from app.core.scoping import family_assignment_scope
+        from app.modules.registry import RESOURCES
+
+        assignments = next(r for r in RESOURCES if r.name == "assignments")
+        assert assignments.scope_hook is family_assignment_scope
+
+    def test_the_submission_roster_is_staff_only(self):
+        """It carries every classmate's name, whether they handed it in and what
+        they scored — which is not what a parent's read permission is for."""
+        import inspect
+
+        from app.modules.lms.router import submissions
+
+        assert "assert_not_family" in inspect.getsource(submissions)
+
     def test_every_student_keyed_resource_carries_the_hook(self):
         """A new resource keyed by student must not ship without scoping."""
         from app.modules.fees.router import INVOICES, PAYMENTS

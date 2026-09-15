@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
 from app.core.context import AuthContext
 from app.core.deps import CurrentUser, TenantDep, require
+from app.core.scoping import assert_not_family
 from app.models.base import AppModel
 from app.modules.lms import service
 from app.utils.audit import record
@@ -141,7 +142,12 @@ async def submissions(
     auth: Annotated[AuthContext, Depends(require("assignments:read"))],
     tenant: TenantDep,
 ):
-    """Lists every student who *should* submit, so the gaps are visible."""
+    """Lists every student who *should* submit, so the gaps are visible.
+
+    Staff only. A family holds ``assignments:read`` for their own child's
+    homework, which is what ``/homework/mine`` answers.
+    """
+    await assert_not_family(auth)
     return await service.assignment_submissions(tenant, assignment_id)
 
 

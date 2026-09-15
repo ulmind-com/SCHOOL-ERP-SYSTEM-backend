@@ -9,7 +9,11 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.core.crud import Resource, build_crud_router
-from app.core.scoping import family_class_scope, student_row_scope
+from app.core.scoping import (
+    family_assignment_scope,
+    family_class_scope,
+    student_row_scope,
+)
 from app.db.mongo import C
 from app.models import academics as ac
 from app.models import communication as comm
@@ -181,6 +185,7 @@ RESOURCES: list[Resource] = [
                  "submission_mode"],
         sortable=["due_date", "created_at"],
         before_create=before_assignment_create,
+        scope_hook=family_assignment_scope,
     ),
     Resource(
         name="materials", collection=C.LMS_MATERIALS, module="lms",
