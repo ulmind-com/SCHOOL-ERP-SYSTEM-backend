@@ -95,20 +95,58 @@ class TestRolePresets:
             assert owner.can(permission), permission
 
 
+class TestInstitutionType:
+    def _tenant(self, institution_type: str) -> TenantContext:
+        return TenantContext(
+            id=ObjectId(), slug="x", name="X",
+            institution_type=institution_type, deployment="dedicated",
+        )
+
+    def test_a_dedicated_licence_does_not_buy_the_other_type_s_modules(self):
+        """Hiding the menu item is not enough — ``require`` reads the same
+        method, so this is also what makes ``/departments`` refuse a school."""
+        assert not self._tenant("school").module_enabled("departments")
+        assert not self._tenant("coaching").module_enabled("programs")
+        assert self._tenant("college").module_enabled("departments")
+        assert self._tenant("university").module_enabled("programs")
+
+    def test_shared_modules_are_untouched(self):
+        for kind in ("school", "college", "coaching", "university"):
+            tenant = self._tenant(kind)
+            for key in ("students", "attendance", "library", "fees"):
+                assert tenant.module_enabled(key), f"{kind}/{key}"
+
+    def test_the_settings_catalogue_offers_only_what_fits(self):
+        from app.core.permissions import module_group_tree
+
+        offered = {
+            m["key"] for g in module_group_tree("school") for m in g["modules"]
+        }
+        assert "departments" not in offered
+        assert "students" in offered
+
+
 class TestNavigation:
     def _tenant(self, **kwargs) -> TenantContext:
         return TenantContext(id=ObjectId(), slug="x", name="X", **kwargs)
 
-    def test_dedicated_deployment_sees_every_nav_item(self):
-        """An owner on a dedicated deployment has nothing withheld by plan or
-        permission — so the menu matches the definition, less the handful of
-        items that belong to a different portal."""
-        tenant = self._tenant(deployment="dedicated")
-        owner = AuthContext(
+    def _owner(self) -> AuthContext:
+        return AuthContext(
             user_id=ObjectId(), email="a@b.c", full_name="T",
             permissions=expand(["*"]), is_owner=True,
         )
-        rendered = {i["key"] for g in build_navigation(owner, tenant) for i in g["items"]}
+
+    def test_dedicated_deployment_sees_every_nav_item(self):
+        """An owner on a dedicated deployment has nothing withheld by plan or
+        permission — so the menu matches the definition, less the handful of
+        items that belong to a different portal.
+
+        Read on a university, which is the one institution type that has every
+        module: the school/college split is the next test's business."""
+        tenant = self._tenant(deployment="dedicated", institution_type="university")
+        rendered = {
+            i["key"] for g in build_navigation(self._owner(), tenant) for i in g["items"]
+        }
         defined = {
             item.key
             for group in NAVIGATION
@@ -116,6 +154,35 @@ class TestNavigation:
             if not item.portals and "admin" not in item.not_portals
         }
         assert rendered == defined
+
+    def test_a_school_is_not_shown_a_college_s_menu(self):
+        """Departments and Programs belong to higher education. A dedicated
+        licence buys the whole deployment, not somebody else's vocabulary."""
+        school = self._tenant(deployment="dedicated", institution_type="school")
+        college = self._tenant(deployment="dedicated", institution_type="college")
+
+        seen = lambda t: {  # noqa: E731
+            i["key"] for g in build_navigation(self._owner(), t) for i in g["items"]
+        }
+        assert not {"departments", "programs"} & seen(school)
+        assert {"departments", "programs"} <= seen(college)
+
+    def test_the_menu_speaks_the_institution_s_language(self):
+        """A college has Guardians and Batches, not Parents and Classes."""
+        def label(tenant, key):
+            for group in build_navigation(self._owner(), tenant):
+                for item in group["items"]:
+                    if item["key"] == key:
+                        return item["label"]
+            raise AssertionError(f"{key} missing")
+
+        school = self._tenant(deployment="dedicated", institution_type="school")
+        college = self._tenant(deployment="dedicated", institution_type="college")
+
+        assert label(school, "guardians") == "Parents"
+        assert label(college, "guardians") == "Guardians"
+        assert label(school, "classes") == "Classes & Sections"
+        assert label(college, "classes") == "Batches & Sections"
 
     def test_a_student_gets_their_own_record_not_the_class_register(self):
         """The administrative screens are built around a class picker; a

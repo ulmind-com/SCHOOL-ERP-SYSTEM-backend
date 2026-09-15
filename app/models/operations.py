@@ -78,6 +78,11 @@ class Assignment(TenantDocument):
     max_marks: float = 0
     type: str = "homework"          # homework | project | lab | reading | presentation
     attachments: list[FileRef] = Field(default_factory=list)
+    #: How the work comes back. ``online`` means students hand it in through the
+    #: portal; ``offline`` means the teacher collects it in class and ticks off
+    #: who handed it in. The two produce the same submission rows, so grading,
+    #: counts and report cards do not care which was used.
+    submission_mode: str = "online"  # online | offline
     allow_late_submission: bool = True
     status: str = "draft"           # draft | published | closed
     published_at: datetime | None = None
@@ -92,6 +97,10 @@ class AssignmentSubmission(TenantDocument):
     status: str = "pending"         # pending | submitted | late | graded | resubmit
     text_answer: str = ""
     attachments: list[FileRef] = Field(default_factory=list)
+    #: True when a teacher recorded a hand-in that happened on paper. The row
+    #: then carries who ticked it, because nobody else can vouch for it.
+    collected_offline: bool = False
+    collected_by: PyObjectId | None = None
     marks: float | None = None
     grade: str = ""
     feedback: str = ""

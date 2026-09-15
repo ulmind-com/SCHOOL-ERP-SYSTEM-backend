@@ -84,6 +84,12 @@ class GradeRequest(AppModel):
     feedback: str = ""
 
 
+class CollectRequest(AppModel):
+    #: The whole roster's answer, not a diff — unticking someone un-collects
+    #: them, the way a register works.
+    received: list[str] = []
+
+
 @homework_router.get("/mine", summary="A student's own homework")
 async def mine(auth: CurrentUser, tenant: TenantDep):
     return await service.my_assignments(tenant, auth)
@@ -107,6 +113,54 @@ async def submissions(
 ):
     """Lists every student who *should* submit, so the gaps are visible."""
     return await service.assignment_submissions(tenant, assignment_id)
+
+
+@homework_router.post("/assignments/{assignment_id}/publish", summary="Publish and notify")
+async def publish(
+    assignment_id: str,
+    auth: Annotated[AuthContext, Depends(require("assignments:publish"))],
+    tenant: TenantDep,
+    request: Request,
+):
+    result = await service.publish_assignment(tenant, auth, assignment_id)
+    await record(auth, "assignments.published", entity_type="assignments",
+                 entity_id=assignment_id, entity_label=result.get("title", ""),
+                 request=request)
+    return result
+
+
+@homework_router.post("/assignments/{assignment_id}/close", summary="Stop accepting it")
+async def close(
+    assignment_id: str,
+    auth: Annotated[AuthContext, Depends(require("assignments:publish"))],
+    tenant: TenantDep,
+    request: Request,
+):
+    result = await service.close_assignment(tenant, auth, assignment_id)
+    await record(auth, "assignments.closed", entity_type="assignments",
+                 entity_id=assignment_id, request=request)
+    return result
+
+
+@homework_router.post("/assignments/{assignment_id}/collect",
+                      summary="Record who handed it in on paper")
+async def collect(
+    assignment_id: str,
+    payload: CollectRequest,
+    auth: Grader,
+    tenant: TenantDep,
+    request: Request,
+):
+    """For assignments the teacher collects in class rather than through the
+    portal. Send the full roster's answer; this screen is the record."""
+    result = await service.collect_offline(
+        tenant, auth, assignment_id, received=payload.received
+    )
+    await record(auth, "assignments.collected", entity_type="assignments",
+                 entity_id=assignment_id,
+                 changes={"received": result["received"], "expected": result["expected"]},
+                 request=request)
+    return result
 
 
 @homework_router.post("/submissions/{submission_id}/grade", summary="Grade a submission")

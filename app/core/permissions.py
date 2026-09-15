@@ -25,6 +25,12 @@ COLLECT = "collect"
 CRUD = (READ, CREATE, UPDATE, DELETE)
 
 
+#: The kinds of institution this product serves. Two families, really: places
+#: that teach children in classes, and places that teach adults in programmes.
+SCHOOL_LIKE = ("school", "coaching")
+HIGHER_ED = ("college", "university", "institute")
+
+
 @dataclass(frozen=True)
 class Module:
     key: str
@@ -34,10 +40,18 @@ class Module:
     #: Modules an institution can switch off without breaking the core.
     optional: bool = True
     icon: str = "square"
+    #: The institution types this module means anything to. Empty means every
+    #: type. A school has no Faculties and a university has no Class 7, and
+    #: showing either one the other's vocabulary is how an ERP starts feeling
+    #: like it was built for somebody else.
+    for_types: tuple[str, ...] = ()
 
     @property
     def permissions(self) -> list[str]:
         return [f"{self.key}:{a}" for a in self.actions]
+
+    def suits(self, institution_type: str) -> bool:
+        return not self.for_types or institution_type in self.for_types
 
 
 # ── The catalogue ─────────────────────────────────────────────────────────
@@ -50,8 +64,10 @@ MODULES: tuple[Module, ...] = (
     Module("audit", "Audit Log", "Core", (READ, EXPORT), optional=False, icon="scroll-text"),
     # Academics
     Module("academic_years", "Academic Years", "Academics", CRUD, optional=False, icon="calendar-range"),
-    Module("departments", "Departments & Faculties", "Academics", CRUD, icon="building-2"),
-    Module("programs", "Programs & Courses", "Academics", CRUD, icon="graduation-cap"),
+    Module("departments", "Departments & Faculties", "Academics", CRUD, icon="building-2",
+           for_types=HIGHER_ED),
+    Module("programs", "Programs & Courses", "Academics", CRUD, icon="graduation-cap",
+           for_types=HIGHER_ED),
     Module("classes", "Classes & Sections", "Academics", CRUD, optional=False, icon="layers"),
     Module("subjects", "Subjects", "Academics", CRUD, optional=False, icon="book-open"),
     Module("timetable", "Timetable", "Academics", (*CRUD, PUBLISH), icon="calendar-clock"),
@@ -102,10 +118,22 @@ OPTIONAL_MODULE_KEYS: list[str] = [m.key for m in MODULES if m.optional]
 CORE_MODULE_KEYS: list[str] = [m.key for m in MODULES if not m.optional]
 
 
-def module_group_tree() -> list[dict]:
-    """Catalogue grouped for the UI's module/permission pickers."""
+def modules_for_type(institution_type: str) -> set[str]:
+    """Every module key that makes sense for this kind of institution."""
+    return {m.key for m in MODULES if m.suits(institution_type)}
+
+
+def module_group_tree(institution_type: str = "") -> list[dict]:
+    """Catalogue grouped for the UI's module/permission pickers.
+
+    Pass an institution type to leave out what that kind of institution does
+    not have — a school administrator should never be offered a Faculties
+    toggle, let alone find one switched on.
+    """
     groups: dict[str, list[dict]] = {}
     for m in MODULES:
+        if institution_type and not m.suits(institution_type):
+            continue
         groups.setdefault(m.group, []).append(
             {
                 "key": m.key,

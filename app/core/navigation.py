@@ -42,6 +42,26 @@ class NavGroup:
 #: The portals that see their own records rather than the institution's.
 FAMILY = ("student", "parent")
 
+#: What a screen is called depends on who is reading it. A college does not
+#: have Class 7 and a school does not have a Faculty, and an ERP that insists
+#: otherwise reads as though it was built for the other kind of place.
+#: Keyed by nav item; the value is the label for a higher-education institution.
+HIGHER_ED_LABELS: dict[str, str] = {
+    "classes": "Batches & Sections",
+    "guardians": "Guardians",
+    "staff": "Staff & Faculty",
+    "homework": "Assignments",
+    "students": "Students",
+}
+
+HIGHER_ED = ("college", "university", "institute")
+
+
+def label_for(item: NavItem, institution_type: str) -> str:
+    if institution_type in HIGHER_ED:
+        return HIGHER_ED_LABELS.get(item.key, item.label)
+    return item.label
+
 NAVIGATION: tuple[NavGroup, ...] = (
     NavGroup("Main Menu", (
         NavItem("dashboard", "Dashboard", "/dashboard", "layout-grid", "dashboard:read"),
@@ -165,7 +185,10 @@ def build_navigation(auth: AuthContext, tenant: TenantContext | None) -> list[di
         items = [
             {
                 "key": item.key,
-                "label": item.label,
+                "label": (
+                    item.label if tenant is None
+                    else label_for(item, tenant.institution_type)
+                ),
                 "href": item.href,
                 "icon": item.icon,
                 "module": item.module_key,

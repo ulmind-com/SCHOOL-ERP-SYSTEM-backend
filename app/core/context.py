@@ -9,7 +9,7 @@ from typing import Any
 from bson import ObjectId
 
 from app.core.config import settings
-from app.core.permissions import CORE_MODULE_KEYS, has_permission
+from app.core.permissions import CORE_MODULE_KEYS, MODULES_BY_KEY, has_permission
 
 
 @dataclass(slots=True)
@@ -66,7 +66,13 @@ class TenantContext:
         return self.status in {"active", "trial"}
 
     def module_enabled(self, key: str) -> bool:
-        # A dedicated deployment owns everything; nothing is withheld.
+        # Institution type comes first, and a dedicated licence does not buy
+        # past it: a school that owns the whole deployment still has no
+        # Faculties, and showing it one is not generosity.
+        module = MODULES_BY_KEY.get(key)
+        if module is not None and not module.suits(self.institution_type):
+            return False
+        # Otherwise a dedicated deployment owns everything; nothing is withheld.
         if self.is_dedicated:
             return True
         return key in CORE_MODULE_KEYS or key in self.enabled_modules

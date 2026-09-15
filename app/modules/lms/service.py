@@ -257,6 +257,11 @@ async def submit_homework(
         raise NotFound("Assignment not found")
     if assignment.get("status") != "published":
         raise Conflict("This assignment is not open for submission")
+    if assignment.get("submission_mode", "online") == "offline":
+        raise Conflict(
+            "This one is collected in class — hand it to your teacher, "
+            "who will mark it received"
+        )
 
     due = assignment.get("due_date")
     late = bool(due and utcnow() > due.replace(tzinfo=UTC))
@@ -277,6 +282,8 @@ async def submit_homework(
         "status": "late" if late else "submitted",
         "text_answer": text_answer.strip(),
         "attachments": attachments or [],
+        "collected_offline": False,
+        "collected_by": None,
     }
 
     if existing:
@@ -291,6 +298,168 @@ async def submit_homework(
         **(serialize_doc(submission) or {}),
         "detail": "Submitted" + (" (late)" if late else ""),
     }
+
+
+async def expected_students(
+    tenant: TenantContext, assignment: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Everyone the assignment reaches.
+
+    Sections when it names them, the whole class when it does not — the same
+    reach ``_assignments_for_student`` reads from the other end, so the roster a
+    teacher ticks off is exactly the set of students who were shown the work.
+    """
+    query: dict[str, Any] = {
+        "tenant_id": tenant.id, "status": "active", "is_deleted": {"$ne": True},
+    }
+    sections = assignment.get("section_ids") or []
+    if sections:
+        query["current_section_id"] = {"$in": sections}
+    elif assignment.get("class_id"):
+        query["current_class_id"] = assignment["class_id"]
+    else:
+        return []
+
+    return await collection(C.STUDENTS).find(query, {
+        "first_name": 1, "last_name": 1, "roll_number": 1, "admission_number": 1,
+    }).to_list(length=2000)
+
+
+async def collect_offline(
+    tenant: TenantContext,
+    auth: AuthContext,
+    assignment_id: str,
+    *,
+    received: list[str],
+) -> dict[str, Any]:
+    """Record who handed the work in on paper.
+
+    Written like the attendance register: the screen sends the whole roster's
+    answer, not a diff, so unticking someone actually un-collects them. A row
+    already graded is left alone — a mark is a statement about work that was
+    seen, and a stray tick should not quietly erase it.
+    """
+    assignment = await collection(C.ASSIGNMENTS).find_one({
+        "_id": ObjectId(assignment_id), "tenant_id": tenant.id, "is_deleted": {"$ne": True},
+    })
+    if assignment is None:
+        raise NotFound("Assignment not found")
+    if assignment.get("submission_mode", "online") != "offline":
+        raise Conflict(
+            "This assignment is handed in through the portal — there is nothing to collect"
+        )
+    if assignment.get("status") == "draft":
+        raise Conflict("Publish the assignment before collecting it")
+
+    roster = {str(s["_id"]) for s in await expected_students(tenant, assignment)}
+    ticked = {sid for sid in received if sid in roster}
+    stranger = set(received) - roster
+    if stranger:
+        raise ValidationError("Someone on that list is not in this class")
+
+    submissions = Repository(C.SUBMISSIONS, tenant.id, actor_id=auth.user_id)
+    existing = {
+        str(row["student_id"]): row
+        for row in await collection(C.SUBMISSIONS).find({
+            "tenant_id": tenant.id, "assignment_id": assignment["_id"],
+            "is_deleted": {"$ne": True},
+        }).to_list(length=2000)
+    }
+
+    due = assignment.get("due_date")
+    late = bool(due and utcnow() > due.replace(tzinfo=UTC))
+    added = removed = 0
+
+    for student_id in roster:
+        row = existing.get(student_id)
+        if student_id in ticked:
+            if row and row.get("status") == "graded":
+                continue
+            payload = {
+                "assignment_id": assignment["_id"],
+                "student_id": ObjectId(student_id),
+                "submitted_at": row.get("submitted_at") if row else utcnow(),
+                "status": "late" if late and not row else (row or {}).get("status") or "submitted",
+                "collected_offline": True,
+                "collected_by": auth.user_id,
+            }
+            if row:
+                await submissions.update(str(row["_id"]), payload)
+            else:
+                payload["submitted_at"] = utcnow()
+                payload["status"] = "late" if late else "submitted"
+                await submissions.create(payload)
+                added += 1
+        elif row and row.get("collected_offline") and row.get("status") != "graded":
+            # Only ever undo a tick this screen itself made.
+            await submissions.delete(str(row["_id"]))
+            removed += 1
+
+    counted = await collection(C.SUBMISSIONS).count_documents({
+        "tenant_id": tenant.id, "assignment_id": assignment["_id"],
+        "is_deleted": {"$ne": True},
+    })
+    await collection(C.ASSIGNMENTS).update_one(
+        {"_id": assignment["_id"]}, {"$set": {"submission_count": counted}}
+    )
+
+    return {
+        "detail": f"{len(ticked)} of {len(roster)} recorded as handed in",
+        "received": len(ticked),
+        "expected": len(roster),
+        "added": added,
+        "removed": removed,
+    }
+
+
+async def publish_assignment(
+    tenant: TenantContext, auth: AuthContext, assignment_id: str
+) -> dict[str, Any]:
+    """Publish, and tell the class.
+
+    Publishing is what makes the work visible to students, so it is also the
+    only honest moment to notify them — a draft that quietly became published
+    at some point in the past is not news anybody can act on.
+    """
+    assignments = Repository(C.ASSIGNMENTS, tenant.id, actor_id=auth.user_id)
+    assignment = await assignments.get_or_404(assignment_id, label="Assignment")
+    if assignment.get("status") == "published":
+        raise Conflict("This is already published")
+
+    updated = await assignments.update(assignment_id, {
+        "status": "published", "published_at": utcnow(),
+    })
+
+    from app.modules.communication.notify import notify_audience
+
+    offline = assignment.get("submission_mode", "online") == "offline"
+    due = assignment.get("due_date")
+    await notify_audience(
+        tenant,
+        audience=(
+            {"section_ids": [str(s) for s in assignment.get("section_ids") or []]}
+            if assignment.get("section_ids")
+            else {"class_ids": [str(assignment.get("class_id"))]}
+        ),
+        title=f"New {assignment.get('type', 'homework')}: {assignment.get('title', '')}",
+        body=(
+            (f"Due {due:%d %b}. " if due else "")
+            + ("Hand it to your teacher in class." if offline else "Hand it in from the portal.")
+        ),
+        category="assignment",
+        link="/portal/homework",
+    )
+    return {**(serialize_doc(updated) or {}), "detail": "Published and the class notified"}
+
+
+async def close_assignment(
+    tenant: TenantContext, auth: AuthContext, assignment_id: str
+) -> dict[str, Any]:
+    """Stop accepting it. Nobody is notified — a deadline passing is not news."""
+    assignments = Repository(C.ASSIGNMENTS, tenant.id, actor_id=auth.user_id)
+    await assignments.get_or_404(assignment_id, label="Assignment")
+    updated = await assignments.update(assignment_id, {"status": "closed"})
+    return {**(serialize_doc(updated) or {}), "detail": "Closed"}
 
 
 async def grade_submission(
@@ -355,12 +524,9 @@ async def assignment_submissions(
     }).to_list(length=2000)
 
     # Everyone who *should* submit, so the gaps are visible rather than implied.
-    expected = await collection(C.STUDENTS).find({
-        "tenant_id": tenant.id, "status": "active", "is_deleted": {"$ne": True},
-        "current_section_id": {"$in": assignment.get("section_ids") or []},
-    }, {"first_name": 1, "last_name": 1, "roll_number": 1, "admission_number": 1}).to_list(
-        length=2000
-    )
+    # Work set for a whole class names no sections, and reading sections alone
+    # showed the teacher an empty roster for exactly those.
+    expected = await expected_students(tenant, assignment)
 
     by_student = {s["student_id"]: s for s in submissions}
     rows = []
@@ -383,14 +549,17 @@ async def assignment_submissions(
             "feedback": submission.get("feedback", "") if submission else "",
             "text_answer": submission.get("text_answer", "") if submission else "",
             "attachments": submission.get("attachments", []) if submission else [],
+            "collected_offline": bool(submission.get("collected_offline")) if submission else False,
         })
 
     return {
         "assignment": serialize_doc(assignment),
+        "submission_mode": assignment.get("submission_mode", "online"),
         "expected": len(expected),
         "submitted": sum(1 for r in rows if r["status"] != "pending"),
         "graded": sum(1 for r in rows if r["status"] == "graded"),
         "late": sum(1 for r in rows if r["status"] == "late"),
+        "pending": sum(1 for r in rows if r["status"] == "pending"),
         "rows": rows,
     }
 
@@ -461,6 +630,10 @@ async def _assignments_for_student(
         row["my_marks"] = submission.get("marks") if submission else None
         row["my_feedback"] = submission.get("feedback", "") if submission else ""
         row["submission_id"] = str(submission["_id"]) if submission else None
+        # A student cannot hand in work the teacher collects on paper, so the
+        # screen has to say what to do instead of offering a button that 409s.
+        row["submission_mode"] = assignment.get("submission_mode", "online")
+        row["collected_offline"] = bool(submission.get("collected_offline")) if submission else False
         row["is_overdue"] = bool(
             due and utcnow() > due.replace(tzinfo=UTC) and not submission
         )

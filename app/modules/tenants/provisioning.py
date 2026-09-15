@@ -82,11 +82,19 @@ async def provision_tenant(
 
     dedicated = deployment == Deployment.DEDICATED
     plan = PLANS_BY_KEY.get("lifetime" if dedicated else plan_key, PLANS_BY_KEY["trial"])
-    modules = (
-        list(ALL_MODULE_KEYS)
-        if dedicated
-        else (enabled_modules or list(plan["included_modules"]))
-    )
+    # Never store a module this kind of institution has no use for. Settings
+    # would hide it anyway, but a school carrying "departments" in its document
+    # is the sort of thing that later gets read back and believed.
+    from app.core.permissions import modules_for_type
+
+    suitable = modules_for_type(institution_type)
+    modules = [
+        key
+        for key in (
+            ALL_MODULE_KEYS if dedicated else (enabled_modules or plan["included_modules"])
+        )
+        if key in suitable
+    ]
     trial_days = 0 if dedicated else int(plan.get("trial_days", 0))
     today = date.today()
 

@@ -228,7 +228,7 @@ async def list_roles(auth: RoleReader, tenant: TenantDep):
 async def catalogue(auth: RoleReader, tenant: TenantDep):
     """What the role editor renders: every module grouped, with the modules this
     institution actually has switched on flagged."""
-    groups = module_group_tree()
+    groups = module_group_tree(tenant.institution_type)
     for group in groups:
         for module in group["modules"]:
             module["enabled"] = tenant.module_enabled(module["key"])

@@ -69,7 +69,7 @@ async def get_settings(auth: Reader, tenant: TenantDep):
     out.pop("notes", None)
     if not auth.is_owner:
         out.pop("license_key", None)
-    groups = module_group_tree()
+    groups = module_group_tree(tenant.institution_type)
     for group in groups:
         for module in group["modules"]:
             module["enabled"] = tenant.module_enabled(module["key"])
