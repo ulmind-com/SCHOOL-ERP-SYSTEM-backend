@@ -103,6 +103,10 @@ NAVIGATION: tuple[NavGroup, ...] = (
                 "academic_years:read", module="academic_years"),
         NavItem("classes", "Classes & Sections", "/academics/classes", "layers", "classes:read"),
         NavItem("subjects", "Subjects", "/academics/subjects", "book-open", "subjects:read"),
+        # Who teaches what, to which section, this year. The single fact the
+        # teacher portal is built on: no allocation, no reach.
+        NavItem("teaching", "Teaching Allocation", "/academics/teaching", "user-check",
+                "subjects:update", module="subjects", not_portals=FAMILY),
         NavItem("departments", "Departments", "/academics/departments", "building-2",
                 "departments:read"),
         NavItem("programs", "Programs", "/academics/programs", "graduation-cap", "programs:read"),

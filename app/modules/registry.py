@@ -59,6 +59,76 @@ async def with_class_names(items: list[dict], tenant) -> list[dict]:
     return items
 
 
+async def before_teaching_create(data: dict, auth, tenant, repo) -> dict:
+    """Stamp the year the allocation belongs to.
+
+    Never asked for on the form. An allocation is always made for the year the
+    office is looking at, and letting someone pick would mostly be a way to
+    file it under the wrong one.
+    """
+    data.setdefault(
+        "academic_year_id", tenant.year_for(auth) or tenant.current_academic_year_id
+    )
+    return data
+
+
+async def with_teaching_names(items: list[dict], tenant) -> list[dict]:
+    """Resolve the four ids an allocation is made of into readable names."""
+    from bson import ObjectId
+
+    from app.db.mongo import collection as _collection
+
+    def ids(key: str) -> list:
+        return [
+            ObjectId(str(row[key]))
+            for row in items
+            if row.get(key) and ObjectId.is_valid(str(row[key]))
+        ]
+
+    staff = {
+        d["_id"]: " ".join(filter(None, [d.get("first_name"), d.get("last_name")]))
+        for d in await _collection(C.STAFF).find(
+            {"_id": {"$in": ids("staff_id")}, "tenant_id": tenant.id},
+            {"first_name": 1, "last_name": 1},
+        ).to_list(length=None)
+    }
+    subjects = {
+        d["_id"]: d.get("name", "")
+        for d in await _collection(C.SUBJECTS).find(
+            {"_id": {"$in": ids("subject_id")}, "tenant_id": tenant.id}, {"name": 1}
+        ).to_list(length=None)
+    }
+    sections = {
+        d["_id"]: d
+        for d in await _collection(C.SECTIONS).find(
+            {"_id": {"$in": ids("section_id")}, "tenant_id": tenant.id},
+            {"name": 1, "class_id": 1},
+        ).to_list(length=None)
+    }
+    classes = {
+        d["_id"]: d.get("name", "")
+        for d in await _collection(C.CLASSES).find(
+            {"_id": {"$in": [s["class_id"] for s in sections.values() if s.get("class_id")]},
+             "tenant_id": tenant.id},
+            {"name": 1},
+        ).to_list(length=None)
+    }
+
+    for row in items:
+        section = sections.get(ObjectId(str(row["section_id"]))) if row.get("section_id") else None
+        row["teacher_name"] = staff.get(
+            ObjectId(str(row["staff_id"])) if row.get("staff_id") else None, ""
+        )
+        row["subject_name"] = subjects.get(
+            ObjectId(str(row["subject_id"])) if row.get("subject_id") else None, ""
+        )
+        row["section_name"] = (
+            f"{classes.get(section.get('class_id'), '')} · {section.get('name', '')}"
+            if section else ""
+        )
+    return items
+
+
 async def with_teacher_names(items: list[dict], tenant) -> list[dict]:
     """Stamp each assignment with the name of the teacher who set it."""
     from app.modules.lms.service import staff_names
@@ -146,6 +216,9 @@ RESOURCES: list[Resource] = [
         model=ac.SubjectAssignment, label="Subject Assignment", tags=["Academics"],
         filters=["subject_id", "section_id", "staff_id", "academic_year_id"],
         scope_hook=academic_year_scope,
+        generated_fields=["academic_year_id"],
+        before_create=before_teaching_create,
+        decorate=with_teaching_names,
     ),
     Resource(
         name="periods", collection=C.PERIODS, module="timetable", model=ac.Period,
