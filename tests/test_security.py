@@ -216,6 +216,31 @@ class TestRowScoping:
 
         assert "assert_not_family" in inspect.getsource(submissions)
 
+    def test_searching_cannot_shake_off_a_scope_hook(self):
+        """The search box wrote straight over ``$or``. Any hook that used one —
+        and a class-or-section rule has to — was then simply gone, so typing a
+        letter turned a parent's list back into the whole institution's."""
+        from app.core.crud import build_query
+        from app.modules.registry import RESOURCES
+
+        assignments = next(r for r in RESOURCES if r.name == "assignments")
+        scope = {"status": "published", "$or": [{"class_id": "c1"}]}
+        query = build_query(assignments, "map", {}, scope)
+
+        assert query.get("status") == "published"
+        conditions = query.get("$and") or []
+        assert {"$or": [{"class_id": "c1"}]} in conditions, query
+        assert any("$or" in c and c["$or"] != [{"class_id": "c1"}] for c in conditions), query
+
+    def test_search_alone_still_uses_a_plain_or(self):
+        from app.core.crud import build_query
+        from app.modules.registry import RESOURCES
+
+        assignments = next(r for r in RESOURCES if r.name == "assignments")
+        query = build_query(assignments, "map", {}, {})
+        assert "$and" not in query
+        assert query["$or"]
+
     def test_every_student_keyed_resource_carries_the_hook(self):
         """A new resource keyed by student must not ship without scoping."""
         from app.modules.fees.router import INVOICES, PAYMENTS

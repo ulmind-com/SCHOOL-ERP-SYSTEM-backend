@@ -169,9 +169,20 @@ def build_query(
             query[key] = coerce(raw)
     if search and resource.search_fields:
         term = search.strip()
-        query["$or"] = [
+        matches: list[dict[str, Any]] = [
             {f: {"$regex": term, "$options": "i"}} for f in resource.search_fields
         ]
+        if "$or" in query:
+            # A scope hook already claimed $or. Assigning over it is how typing
+            # in the search box became a way out of row-level scoping — both
+            # conditions have to hold, so both go under $and.
+            query["$and"] = [
+                *query.pop("$and", []),
+                {"$or": query.pop("$or")},
+                {"$or": matches},
+            ]
+        else:
+            query["$or"] = matches
     return query
 
 
