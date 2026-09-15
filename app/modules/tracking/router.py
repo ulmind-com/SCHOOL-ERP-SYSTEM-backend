@@ -109,6 +109,13 @@ async def path(trip_id: str, auth: Viewer, tenant: TenantDep):
     return await service.trip_path(tenant, trip_id)
 
 
+@router.get("/routes/{route_id}/shape", summary="A route's stops, in order")
+async def shape(route_id: str, auth: CurrentUser, tenant: TenantDep):
+    """The part of a route that does not move. Open to anyone signed in — a
+    parent needs the line their child's bus takes, not just the dot."""
+    return await service.route_shape(tenant, route_id)
+
+
 @router.get("/my-bus", summary="Where my child's bus is")
 async def my_bus(auth: CurrentUser, tenant: TenantDep):
     """Families see only the vehicle their own children are allocated to."""
@@ -131,16 +138,48 @@ async def my_bus(auth: CurrentUser, tenant: TenantDep):
     }).to_list(length=20)
     route_ids = {a["route_id"] for a in allocations if a.get("route_id")}
 
+    # Matched on the route's id. Matching on its *name* meant two routes called
+    # "Route 2" put one family on the other's bus.
     live = await service.live_vehicles(tenant)
-    routes = {
-        str(r["_id"]): r.get("name", "")
-        for r in await collection(C.TRANSPORT_ROUTES).find(
-            {"_id": {"$in": list(route_ids)}}
+    wanted = {str(r) for r in route_ids}
+    mine = [v for v in live if v.get("route_id") in wanted]
+
+    students = {
+        s["_id"]: " ".join(filter(None, [s.get("first_name"), s.get("last_name")]))
+        for s in await collection(C.STUDENTS).find(
+            {"_id": {"$in": student_ids}, "tenant_id": tenant.id},
+            {"first_name": 1, "last_name": 1},
         ).to_list(length=None)
     }
-    mine = [v for v in live if v["route"] in routes.values()]
+    stops = {
+        s["_id"]: s
+        for s in await collection(C.TRANSPORT_STOPS).find(
+            {"_id": {"$in": [a["stop_id"] for a in allocations if a.get("stop_id")]}},
+            {"name": 1, "latitude": 1, "longitude": 1, "pickup_time": 1, "drop_time": 1},
+        ).to_list(length=None)
+    }
+
+    riders = [
+        {
+            "student_id": str(a["student_id"]),
+            "student_name": students.get(a["student_id"], ""),
+            "route_id": str(a["route_id"]) if a.get("route_id") else None,
+            "stop_name": (stops.get(a.get("stop_id")) or {}).get("name", ""),
+            "stop_lat": (stops.get(a.get("stop_id")) or {}).get("latitude"),
+            "stop_lng": (stops.get(a.get("stop_id")) or {}).get("longitude"),
+            "pickup_time": (stops.get(a.get("stop_id")) or {}).get("pickup_time", ""),
+            "drop_time": (stops.get(a.get("stop_id")) or {}).get("drop_time", ""),
+            "direction": a.get("direction", "both"),
+        }
+        for a in allocations
+    ]
 
     return {
         "vehicles": mine,
-        "detail": "" if mine else "No bus is running on your route right now",
+        "riders": riders,
+        "detail": (
+            "" if mine
+            else "No bus is running on your route right now"
+            if riders else "No transport allocated"
+        ),
     }

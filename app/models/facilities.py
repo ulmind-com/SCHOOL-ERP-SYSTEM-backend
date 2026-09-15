@@ -53,7 +53,9 @@ class LibraryLoan(TenantDocument):
 class Vehicle(TenantDocument):
     registration_number: str
     model: str = ""
-    type: str = "bus"               # bus | van | car
+    #: Drives the marker on the live map as well as the paperwork, so it lists
+    #: what Indian schools actually run rather than three generic words.
+    type: str = "bus"  # bus | mini_bus | van | tempo | car | auto
     capacity: int = 40
     driver_name: str = ""
     driver_phone: str = ""

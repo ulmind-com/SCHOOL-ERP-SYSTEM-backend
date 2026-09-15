@@ -275,6 +275,16 @@ async def live_vehicles(tenant: TenantContext) -> list[dict[str, Any]]:
             {"tenant_id": tenant.id}
         ).to_list(length=None)
     }
+    # The map draws a bus differently from a car, and a marker that matches what
+    # is actually on the road is the difference between a map you trust and a
+    # map you squint at.
+    vehicles = {
+        v["_id"]: v
+        for v in await collection(C.TRANSPORT_VEHICLES).find(
+            {"_id": {"$in": [t["vehicle_id"] for t in trips if t.get("vehicle_id")]}},
+            {"type": 1, "model": 1, "capacity": 1, "driver_phone": 1},
+        ).to_list(length=None)
+    }
 
     now = utcnow()
     out = []
@@ -284,10 +294,16 @@ async def live_vehicles(tenant: TenantContext) -> list[dict[str, Any]]:
             int((now - last.replace(tzinfo=UTC)).total_seconds()) if last else None
         )
         route = routes.get(trip.get("route_id"), {})
+        vehicle = vehicles.get(trip.get("vehicle_id"), {})
         out.append({
             "trip_id": str(trip["_id"]),
             "vehicle_id": str(trip["vehicle_id"]),
             "vehicle_number": trip.get("vehicle_number", ""),
+            "vehicle_type": vehicle.get("type", "bus"),
+            "vehicle_model": vehicle.get("model", ""),
+            "capacity": vehicle.get("capacity", 0),
+            "driver_phone": vehicle.get("driver_phone", ""),
+            "route_id": str(trip["route_id"]) if trip.get("route_id") else None,
             "route": route.get("name", ""),
             "direction": trip.get("direction", ""),
             "driver": trip.get("driver_name", ""),
@@ -307,6 +323,44 @@ async def live_vehicles(tenant: TenantContext) -> list[dict[str, Any]]:
             "stops_reached": trip.get("stops_reached") or [],
         })
     return out
+
+
+async def route_shape(tenant: TenantContext, route_id: str) -> dict[str, Any]:
+    """A route as the map needs it: its stops, in order, with coordinates.
+
+    Separate from the live position because it is the part that does not move.
+    Drawn before any bus is out, so a parent opening the screen at seven in the
+    morning sees the line their child's bus will take rather than a blank tile.
+    """
+    route = await collection(C.TRANSPORT_ROUTES).find_one(
+        {"_id": ObjectId(route_id), "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    )
+    if route is None:
+        raise NotFound("Route not found")
+
+    stops = await collection(C.TRANSPORT_STOPS).find({
+        "tenant_id": tenant.id, "route_id": route["_id"], "is_deleted": {"$ne": True},
+    }).sort([("order", 1)]).to_list(length=200)
+
+    return {
+        "id": str(route["_id"]),
+        "name": route.get("name", ""),
+        "code": route.get("code", ""),
+        "distance_km": route.get("distance_km", 0),
+        "stops": [
+            {
+                "id": str(stop["_id"]),
+                "name": stop.get("name", ""),
+                "order": stop.get("order", 0),
+                "lat": stop.get("latitude"),
+                "lng": stop.get("longitude"),
+                "pickup_time": stop.get("pickup_time", ""),
+                "drop_time": stop.get("drop_time", ""),
+                "landmark": stop.get("landmark", ""),
+            }
+            for stop in stops
+        ],
+    }
 
 
 async def trip_path(tenant: TenantContext, trip_id: str) -> dict[str, Any]:
