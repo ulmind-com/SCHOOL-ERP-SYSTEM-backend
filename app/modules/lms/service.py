@@ -328,7 +328,12 @@ async def staff_names(
 ) -> dict[ObjectId, str]:
     """Who set the work. A student reading "Mathematics · Homework" still wants
     to know whose it is, and so does the office six months later."""
-    wanted = [i for i in set(ids) if isinstance(i, ObjectId)]
+    # Called from both sides of the CRUD factory: raw Mongo documents carry
+    # real ObjectIds, a serialized page carries their strings. Taking only one
+    # shape is how "Set by" came back blank on every list.
+    wanted = [
+        ObjectId(str(i)) for i in set(map(str, filter(None, ids))) if ObjectId.is_valid(str(i))
+    ]
     if not wanted:
         return {}
     return {

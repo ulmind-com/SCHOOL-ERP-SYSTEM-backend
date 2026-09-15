@@ -131,11 +131,15 @@ async def with_teaching_names(items: list[dict], tenant) -> list[dict]:
 
 async def with_teacher_names(items: list[dict], tenant) -> list[dict]:
     """Stamp each assignment with the name of the teacher who set it."""
+    from bson import ObjectId
+
     from app.modules.lms.service import staff_names
 
     names = await staff_names(tenant, [row.get("assigned_by") for row in items])
     for row in items:
-        row["set_by"] = names.get(row.get("assigned_by"), "")
+        raw = row.get("assigned_by")
+        key = ObjectId(str(raw)) if raw and ObjectId.is_valid(str(raw)) else None
+        row["set_by"] = names.get(key, "")
     return items
 
 
