@@ -28,6 +28,12 @@ router = APIRouter(prefix="/portal", tags=["Portal"])
 Viewer = CurrentUser
 
 
+def _as_dt(on: Any) -> Any:
+    from datetime import UTC, datetime
+
+    return datetime(on.year, on.month, on.day, tzinfo=UTC)
+
+
 async def _my_students(auth: AuthContext, tenant: TenantContext) -> list[Any]:
     allowed = await family_student_ids(auth, tenant)
     if allowed is None:
@@ -81,6 +87,72 @@ async def fees(auth: Viewer, tenant: TenantDep):
             "ledger": await fees_service.student_ledger(tenant, str(sid)),
         })
     return {"students": out}
+
+
+@router.get("/calendar", summary="The institution's year — holidays and events")
+async def calendar(
+    auth: CurrentUser,
+    tenant: TenantDep,
+    start: str | None = None,
+    end: str | None = None,
+):
+    """Open to anyone signed in.
+
+    A school's holiday calendar is published to parents on a notice board; it is
+    not something to gate behind the permission that edits academic years.
+    """
+    from datetime import date, timedelta
+
+    from app.modules.attendance.service import holidays_between
+
+    today = date.today()
+    first = date.fromisoformat(start) if start else today.replace(day=1)
+    last = date.fromisoformat(end) if end else first + timedelta(days=370)
+
+    class_id = None
+    if auth.student_id or auth.guardian_id:
+        ids = await family_student_ids(auth, tenant)
+        if ids:
+            student = await collection(C.STUDENTS).find_one(
+                {"_id": ids[0], "tenant_id": tenant.id}, projection={"current_class_id": 1}
+            )
+            class_id = (student or {}).get("current_class_id")
+
+    holidays = await holidays_between(tenant, first, last, class_id)
+    events = await collection(C.EVENTS).find({
+        "tenant_id": tenant.id, "is_deleted": {"$ne": True},
+        "status": {"$nin": ["cancelled"]},
+        "start_at": {"$gte": _as_dt(first), "$lte": _as_dt(last)},
+    }).sort([("start_at", 1)]).to_list(length=300)
+
+    return {
+        "from": first.isoformat(),
+        "to": last.isoformat(),
+        "holidays": [
+            {
+                "id": str(h["_id"]),
+                "name": h.get("name", ""),
+                "type": h.get("type", "public"),
+                "description": h.get("description", ""),
+                "attendance_required": bool(h.get("attendance_required")),
+                "start_date": h["_first"].isoformat(),
+                "end_date": h["_last"].isoformat(),
+            }
+            for h in holidays
+        ],
+        "events": [
+            {
+                "id": str(e["_id"]),
+                "title": e.get("title", ""),
+                "category": e.get("category", "general"),
+                "location": e.get("location", ""),
+                "all_day": bool(e.get("all_day")),
+                "start_at": e["start_at"].isoformat(),
+                "end_at": e["end_at"].isoformat() if e.get("end_at") else None,
+            }
+            for e in events
+        ],
+    }
 
 
 @router.get("/announcements", summary="Notices for this family")

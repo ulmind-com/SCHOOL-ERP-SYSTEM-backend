@@ -55,6 +55,10 @@ NAVIGATION: tuple[NavGroup, ...] = (
         NavItem("attendance", "Attendance", "/attendance", "check-square", "attendance:read",
                 not_portals=FAMILY),
         NavItem("timetable", "Timetable", "/timetable", "calendar-clock", "timetable:read"),
+        # Holidays and events on one month grid. Open to every portal, because a
+        # school's year planner goes on the notice board, not behind a permission.
+        NavItem("calendar", "Calendar", "/calendar", "calendar-days", "events:read",
+                module="events"),
         NavItem("homework", "Homework", "/portal/homework", "clipboard-list",
                 "assignments:read", module="assignments", portals=FAMILY),
         NavItem("assignments", "Assignments", "/assignments", "clipboard-list",
@@ -120,7 +124,8 @@ NAVIGATION: tuple[NavGroup, ...] = (
     NavGroup("Communication", (
         NavItem("announcements", "Announcements", "/communication/announcements", "megaphone",
                 "announcements:read"),
-        NavItem("events", "Events", "/communication/events", "calendar-days", "events:read"),
+        NavItem("events", "Events", "/communication/events", "calendar-days", "events:read",
+                not_portals=FAMILY),
         NavItem("messages", "Messages", "/communication/messages", "message-square",
                 "messages:read"),
         NavItem("complaints", "Helpdesk", "/communication/complaints", "life-buoy",
