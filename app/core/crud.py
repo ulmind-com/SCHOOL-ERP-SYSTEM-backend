@@ -126,6 +126,10 @@ class Resource:
     scope_hook: Callable[[AuthContext, TenantContext], Awaitable[dict]] | None = None
     #: Turn a raw document into the API shape (joins, computed extras).
     serializer: Callable[[dict], dict] | None = None
+    #: Like ``serializer``, but for the whole page at once and allowed to hit
+    #: the database. Names that live in another collection — the class a section
+    #: belongs to — need one read for the page, not one per row.
+    decorate: Callable[[list[dict], TenantContext], Awaitable[list[dict]]] | None = None
 
     read_only: bool = False
     soft_delete: bool = True
@@ -262,6 +266,8 @@ def build_crud_router(resource: Resource) -> APIRouter:
         )
         if resource.serializer:
             result.items = [resource.serializer(item) for item in result.items]
+        if resource.decorate:
+            result.items = await resource.decorate(result.items, tenant)
         return result
 
     # Registered before "/{item_id}" so the literal path wins the match.
@@ -297,6 +303,8 @@ def build_crud_router(resource: Resource) -> APIRouter:
         items = result.items
         if resource.serializer:
             items = [resource.serializer(item) for item in items]
+        if resource.decorate:
+            items = await resource.decorate(items, tenant)
         await record(auth, f"{resource.name}.export", entity_type=resource.name,
                      entity_label=f"{len(items)} row(s)", request=request)
         stamp = utcnow().strftime("%Y-%m-%d")

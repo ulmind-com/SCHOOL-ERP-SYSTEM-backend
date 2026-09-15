@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
 from app.core.context import AuthContext
 from app.core.deps import CurrentUser, TenantDep, require
@@ -88,6 +88,36 @@ class CollectRequest(AppModel):
     #: The whole roster's answer, not a diff — unticking someone un-collects
     #: them, the way a register works.
     received: list[str] = []
+
+
+@homework_router.post("/attachment", summary="Attach a file to your own homework")
+async def attachment(
+    auth: CurrentUser,
+    tenant: TenantDep,
+    file: Annotated[UploadFile, File()],
+):
+    """Upload for a student's own submission.
+
+    Deliberately not ``/files/upload``: that one needs ``documents:create`` and
+    files the result in the institution's vault. A child's homework photo is
+    neither the school's document library nor a reason to hand a student that
+    permission.
+    """
+    from app.core.exceptions import Forbidden
+    from app.modules.documents import imagekit
+
+    if not auth.student_id:
+        raise Forbidden("Only a student can attach work")
+
+    content = await file.read()
+    stored = await imagekit.upload(
+        content=content,
+        filename=file.filename or "homework",
+        content_type=file.content_type or "application/octet-stream",
+        tenant=tenant,
+        category="homework",
+    )
+    return stored
 
 
 @homework_router.get("/mine", summary="A student's own homework")

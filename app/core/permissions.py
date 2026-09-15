@@ -114,6 +114,7 @@ MODULES: tuple[Module, ...] = (
 
 MODULES_BY_KEY: dict[str, Module] = {m.key: m for m in MODULES}
 ALL_PERMISSIONS: list[str] = [p for m in MODULES for p in m.permissions]
+ALL_MODULE_KEYS: list[str] = [m.key for m in MODULES]
 OPTIONAL_MODULE_KEYS: list[str] = [m.key for m in MODULES if m.optional]
 CORE_MODULE_KEYS: list[str] = [m.key for m in MODULES if not m.optional]
 

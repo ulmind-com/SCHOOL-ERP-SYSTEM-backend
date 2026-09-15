@@ -19,6 +19,54 @@ from app.models import hr
 from app.models import operations as ops
 from app.models import people as ppl
 
+
+async def with_class_names(items: list[dict], tenant) -> list[dict]:
+    """Stamp each row with the name of the class it belongs to.
+
+    Sections are called "A" and subjects are called "Mathematics" in every class
+    that has them, so a flat dropdown of either is a list of duplicates. One
+    read per page, keyed by the ids actually on it.
+    """
+    from bson import ObjectId
+
+    from app.db.mongo import collection
+
+    ids = {
+        ObjectId(row["class_id"])
+        for row in items
+        if row.get("class_id") and ObjectId.is_valid(str(row["class_id"]))
+    }
+    if not ids:
+        return items
+
+    names = {
+        doc["_id"]: doc.get("name", "")
+        for doc in await collection(C.CLASSES).find(
+            {"_id": {"$in": list(ids)}, "tenant_id": tenant.id}, {"name": 1}
+        ).to_list(length=len(ids))
+    }
+    for row in items:
+        raw = row.get("class_id")
+        if raw and ObjectId.is_valid(str(raw)):
+            row["class_name"] = names.get(ObjectId(str(raw)), "")
+    return items
+
+
+async def before_assignment_create(data: dict, auth, tenant, repo) -> dict:
+    """Stamp who set the work and when.
+
+    A student looking at homework wants to know whose it is, and a head of
+    department auditing later wants the same answer — neither should depend on
+    the teacher having typed their own name into a field.
+    """
+    from app.models.base import utcnow
+
+    data.setdefault("assigned_by", auth.staff_id or auth.user_id)
+    data.setdefault("assigned_on", utcnow())
+    data.setdefault("status", "draft")
+    return data
+
+
 RESOURCES: list[Resource] = [
     # ── Academics ─────────────────────────────────────────────────────────
     Resource(
@@ -63,6 +111,7 @@ RESOURCES: list[Resource] = [
         tags=["Academics"], search_fields=["name", "room"],
         filters=["class_id", "academic_year_id", "class_teacher_id", "is_active"],
         sortable=["name", "created_at"], default_sort_dir="asc",
+        decorate=with_class_names,
     ),
     Resource(
         name="subjects", collection=C.SUBJECTS, module="subjects", model=ac.Subject,
@@ -70,6 +119,7 @@ RESOURCES: list[Resource] = [
         filters=["class_id", "department_id", "program_id", "type", "is_active"],
         sortable=["order", "name"], default_sort_dir="asc", unique_fields=["code"],
         scope_hook=family_class_scope,
+        decorate=with_class_names,
     ),
     Resource(
         name="subject-assignments", collection=C.SUBJECT_ASSIGNMENTS, module="subjects",
@@ -127,8 +177,10 @@ RESOURCES: list[Resource] = [
     Resource(
         name="assignments", collection=C.ASSIGNMENTS, module="assignments",
         model=ops.Assignment, tags=["Assignments"], search_fields=["title", "description"],
-        filters=["subject_id", "class_id", "status", "type", "assigned_by"],
+        filters=["subject_id", "class_id", "status", "type", "assigned_by",
+                 "submission_mode"],
         sortable=["due_date", "created_at"],
+        before_create=before_assignment_create,
     ),
     Resource(
         name="materials", collection=C.LMS_MATERIALS, module="lms",

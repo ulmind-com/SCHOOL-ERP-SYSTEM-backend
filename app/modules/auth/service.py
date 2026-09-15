@@ -14,7 +14,7 @@ from app.core.context import AuthContext, TenantContext
 from app.core.deps import _permissions_for
 from app.core.exceptions import Conflict, Forbidden, Unauthorized, ValidationError
 from app.core.navigation import build_navigation
-from app.core.permissions import PLATFORM_PERMISSIONS
+from app.core.permissions import ALL_MODULE_KEYS, PLATFORM_PERMISSIONS
 from app.core.security import (
     create_token,
     fingerprint,
@@ -121,7 +121,12 @@ async def session_institution(tenant: TenantContext) -> SessionInstitution:
         currency=tenant.currency,
         locale=tenant.locale,
         branding=tenant.branding,
-        enabled_modules=sorted(tenant.enabled_modules),
+        # What this institution actually has, with the plan, the licence and the
+        # institution type already folded in. The client should not be running
+        # its own half of that rule — that is how the two drift apart.
+        enabled_modules=sorted(
+            key for key in ALL_MODULE_KEYS if tenant.module_enabled(key)
+        ),
         limits={
             "max_students": tenant.limits.max_students,
             "max_staff": tenant.limits.max_staff,
