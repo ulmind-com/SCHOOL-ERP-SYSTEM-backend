@@ -175,6 +175,18 @@ class TestRowScoping:
         scope = asyncio.run(student_row_scope(auth, _tenant()))
         assert scope == {"student_id": {"$in": []}}
 
+    def test_family_scoped_endpoints_pass_the_narrowing_down(self):
+        """A register, a loan list and a homework list all read the same hook —
+        each one that forgets it hands over the whole class."""
+        import inspect
+
+        from app.modules.attendance.router import get_register
+        from app.modules.library.router import loans
+        from app.modules.lms.service import my_assignments
+
+        for fn in (get_register, loans, my_assignments):
+            assert "family_student_ids" in inspect.getsource(fn), fn.__name__
+
     def test_every_student_keyed_resource_carries_the_hook(self):
         """A new resource keyed by student must not ship without scoping."""
         from app.modules.fees.router import INVOICES, PAYMENTS
@@ -213,22 +225,3 @@ class TestPhoneDigits:
 
     def test_missing_is_empty(self):
         assert phone_digits(None) == ""
-
-    def test_a_guardian_is_narrowed_to_their_children(self):
-        """The hook has to hit the guardian record; with none linked the answer
-        is an empty list, never an empty filter."""
-        auth = self._auth(portal="parent", guardian_id=ObjectId())
-        scope = asyncio.run(student_row_scope(auth, _tenant()))
-        assert scope == {"student_id": {"$in": []}}
-
-    def test_family_scoped_endpoints_pass_the_narrowing_down(self):
-        """A register, a loan list and a homework list all read the same hook —
-        each one that forgets it hands over the whole class."""
-        import inspect
-
-        from app.modules.attendance.router import get_register
-        from app.modules.library.router import loans
-        from app.modules.lms.service import my_assignments
-
-        for fn in (get_register, loans, my_assignments):
-            assert "family_student_ids" in inspect.getsource(fn), fn.__name__
