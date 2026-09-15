@@ -528,9 +528,24 @@ async def assignment_submissions(
     # showed the teacher an empty roster for exactly those.
     expected = await expected_students(tenant, assignment)
 
+    def by_roll(student: dict[str, Any]) -> tuple[int, float, str]:
+        """Roll 10 belongs after roll 2, not between 1 and 2.
+
+        Rolls are stored loosely — "7", 7, "7A" — so sort numerically where a
+        number is what it is, and alphabetically where it is not. Students with
+        no roll at all go last rather than first.
+        """
+        raw = student.get("roll_number")
+        if raw in (None, ""):
+            return (2, 0.0, "")
+        try:
+            return (0, float(raw), "")
+        except (TypeError, ValueError):
+            return (1, 0.0, str(raw))
+
     by_student = {s["student_id"]: s for s in submissions}
     rows = []
-    for student in sorted(expected, key=lambda s: str(s.get("roll_number") or "")):
+    for student in sorted(expected, key=by_roll):
         submission = by_student.get(student["_id"])
         rows.append({
             "student_id": str(student["_id"]),
