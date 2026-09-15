@@ -28,6 +28,77 @@ def _today() -> datetime:
     return datetime(today.year, today.month, today.day, tzinfo=UTC)
 
 
+async def _holiday_panel(
+    tenant: TenantContext, class_id: ObjectId | None = None, ahead: int = 4
+) -> dict[str, Any]:
+    """Today's holiday if there is one, and the next few coming.
+
+    On every dashboard because it answers the same question for everyone, just
+    for different reasons: a parent plans around it, a teacher stops wondering
+    why no register is due, an administrator sees the term taking shape.
+    """
+    from app.modules.attendance.service import holiday_on, holidays_between
+
+    on = date.today()
+    today = await holiday_on(tenant, on, class_id)
+    upcoming = await holidays_between(tenant, on, on + timedelta(days=120), class_id)
+
+    def shape(row: dict) -> dict[str, Any]:
+        first, last = row["_first"], row["_last"]
+        return {
+            "id": str(row["_id"]),
+            "name": row.get("name", ""),
+            "type": row.get("type", "public"),
+            "start_date": first.isoformat(),
+            "end_date": last.isoformat(),
+            "days": (last - first).days + 1,
+            "starts_in": (first - on).days,
+            "attendance_required": bool(row.get("attendance_required")),
+        }
+
+    return {
+        "today": {
+            "name": today.get("name", ""),
+            "type": today.get("type", "public"),
+            "attendance_required": bool(today.get("attendance_required")),
+            "end_date": today["_last"].isoformat(),
+        } if today else None,
+        # Skip the one already running — it is reported above, and repeating it
+        # as "upcoming" reads as a second holiday.
+        "upcoming": [
+            shape(row) for row in upcoming
+            if row["_first"] > on
+        ][:ahead],
+    }
+
+
+async def _holidays_needing_attention(tenant: TenantContext) -> list[dict[str, Any]]:
+    """Closed holidays that still have attendance recorded inside them.
+
+    Only looks at recent ones: a break three years ago with stray registers is
+    history, not a task.
+    """
+    from app.modules.attendance.service import holiday_conflicts
+
+    since = _today() - timedelta(days=120)
+    rows = await collection(C.HOLIDAYS).find({
+        "tenant_id": tenant.id, "is_deleted": {"$ne": True}, "is_active": True,
+        "attendance_required": {"$ne": True}, "start_date": {"$gte": since},
+    }).sort([("start_date", -1)]).limit(20).to_list(length=20)
+
+    out = []
+    for row in rows:
+        report = await holiday_conflicts(tenant, str(row["_id"]))
+        if report["records"]:
+            out.append({
+                "id": str(row["_id"]),
+                "name": row.get("name", ""),
+                "records": report["records"],
+                "dates": report["dates"],
+            })
+    return out
+
+
 @router.get("", summary="Dashboard for the signed-in user")
 async def dashboard(auth: Viewer, tenant: TenantDep):
     if auth.portal == "student" and auth.student_id:
@@ -109,10 +180,16 @@ async def _admin_dashboard(tenant: TenantContext, auth: AuthContext) -> dict[str
     total_billed = round(float(fee.get("total", 0)), 2)
     total_paid = round(float(fee.get("paid", 0)), 2)
 
+    holidays = await _holiday_panel(tenant)
+    # A closed holiday with registers inside it is a job for the office, so it
+    # belongs on their screen rather than waiting to be noticed.
+    pending_holiday_fixes = await _holidays_needing_attention(tenant)
+
     return {
         "portal": "admin",
         "institution": {"name": tenant.name, "type": tenant.institution_type,
                         "deployment": tenant.deployment},
+        "holidays": {**holidays, "needs_attention": pending_holiday_fixes},
         "stats": {
             "students": students,
             "staff": staff,
@@ -122,6 +199,13 @@ async def _admin_dashboard(tenant: TenantContext, auth: AuthContext) -> dict[str
                 "present": present,
                 "absent": counts.get("absent", 0),
                 "percentage": round(present / marked * 100, 2) if marked else 0.0,
+                # Nought per cent on a day the school is shut is not a number
+                # anyone should read as a number.
+                "holiday": (holidays["today"] or {}).get("name") or "",
+                "counts": bool(
+                    holidays["today"] is None
+                    or (holidays["today"] or {}).get("attendance_required")
+                ),
             },
             "fees": {
                 "billed": total_billed,
@@ -200,6 +284,7 @@ async def _teacher_dashboard(tenant: TenantContext, auth: AuthContext) -> dict[s
 
     return {
         "portal": "teacher",
+        "holidays": await _holiday_panel(tenant),
         "stats": {
             "my_sections": len(all_sections),
             "my_students": students,
@@ -237,6 +322,7 @@ async def _student_dashboard(tenant: TenantContext, auth: AuthContext) -> dict[s
 
     return {
         "portal": "student",
+        "holidays": await _holiday_panel(tenant, student.get("current_class_id")),
         "student": {
             "name": " ".join(filter(None, [student.get("first_name"),
                                            student.get("last_name")])),
@@ -289,6 +375,7 @@ async def _parent_dashboard(tenant: TenantContext, auth: AuthContext) -> dict[st
 
     return {
         "portal": "parent",
+        "holidays": await _holiday_panel(tenant),
         "guardian": {"name": guardian.get("full_name", "")},
         "children": children,
         "total_outstanding": round(
