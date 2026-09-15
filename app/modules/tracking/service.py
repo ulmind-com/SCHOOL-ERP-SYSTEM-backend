@@ -68,13 +68,20 @@ async def start_trip(
     if vehicle is None:
         raise NotFound("Vehicle not found")
 
+    # Who is driving is a fact about the vehicle, not about whoever tapped
+    # start: a conductor, or the office, can open the trip on a driver's behalf
+    # and the trip must still name the person actually at the wheel. Who tapped
+    # it is kept separately, because that is a different question.
     trip = await trips.create({
         "vehicle_id": ObjectId(vehicle_id),
         "vehicle_number": vehicle.get("registration_number", ""),
         "route_id": ObjectId(route_id) if route_id and ObjectId.is_valid(route_id) else None,
         "direction": direction,
         "driver_user_id": auth.user_id,
-        "driver_name": auth.full_name,
+        "driver_name": vehicle.get("driver_name") or auth.full_name,
+        "driver_phone": vehicle.get("driver_phone", ""),
+        "started_by": auth.user_id,
+        "started_by_name": auth.full_name,
         "status": "active",
         "started_at": utcnow(),
         "ended_at": None,
