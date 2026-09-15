@@ -51,8 +51,11 @@ async def get_register(
     on: Annotated[date | None, Query(alias="date")] = None,
     session_key: str = "day",
 ):
+    from app.core.scoping import family_student_ids
+
     return await service.get_register(
-        tenant, section_id=section_id, on=on or date.today(), session_key=session_key
+        tenant, section_id=section_id, on=on or date.today(), session_key=session_key,
+        only_students=await family_student_ids(auth, tenant),
     )
 
 

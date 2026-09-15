@@ -396,11 +396,30 @@ async def assignment_submissions(
 
 
 async def my_assignments(tenant: TenantContext, auth: AuthContext) -> list[dict[str, Any]]:
-    """A student's homework with their own submission state attached."""
-    if not auth.student_id:
+    """Homework for the signed-in family, with each child's submission state.
+
+    A parent holds the same view as their child — otherwise the menu shows them
+    a Homework screen that is permanently empty, which is worse than no screen.
+    """
+    from app.core.scoping import family_student_ids
+
+    student_ids = await family_student_ids(auth, tenant)
+    if not student_ids:
         return []
+
+    out: list[dict[str, Any]] = []
+    many = len(student_ids) > 1
+    for student_id in student_ids:
+        out.extend(await _assignments_for_student(tenant, student_id, name_them=many))
+    out.sort(key=lambda row: (row.get("due_date") or "", row.get("title", "")))
+    return out
+
+
+async def _assignments_for_student(
+    tenant: TenantContext, student_id: ObjectId, *, name_them: bool
+) -> list[dict[str, Any]]:
     student = await collection(C.STUDENTS).find_one(
-        {"_id": auth.student_id, "tenant_id": tenant.id}
+        {"_id": student_id, "tenant_id": tenant.id}
     )
     section_id = (student or {}).get("current_section_id")
     class_id = (student or {}).get("current_class_id")
@@ -424,7 +443,7 @@ async def my_assignments(tenant: TenantContext, auth: AuthContext) -> list[dict[
     submissions = {
         s["assignment_id"]: s
         for s in await collection(C.SUBMISSIONS).find({
-            "tenant_id": tenant.id, "student_id": auth.student_id,
+            "tenant_id": tenant.id, "student_id": student_id,
         }).to_list(length=500)
     }
     subjects = {
@@ -444,6 +463,13 @@ async def my_assignments(tenant: TenantContext, auth: AuthContext) -> list[dict[
         row["submission_id"] = str(submission["_id"]) if submission else None
         row["is_overdue"] = bool(
             due and utcnow() > due.replace(tzinfo=UTC) and not submission
+        )
+        row["student_id"] = str(student_id)
+        # Only worth saying whose it is when a parent is looking at several.
+        row["student_name"] = (
+            " ".join(filter(None, [(student or {}).get("first_name"),
+                                   (student or {}).get("last_name")]))
+            if name_them else ""
         )
         out.append(row)
     return out

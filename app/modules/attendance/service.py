@@ -27,18 +27,34 @@ def as_datetime(on: date) -> datetime:
 
 
 async def get_register(
-    tenant: TenantContext, *, section_id: str, on: date, session_key: str = "day"
+    tenant: TenantContext,
+    *,
+    section_id: str,
+    on: date,
+    session_key: str = "day",
+    only_students: list[ObjectId] | None = None,
 ) -> dict[str, Any]:
     """The roster with whatever has already been marked, so the UI opens
-    pre-filled rather than blank on a correction."""
+    pre-filled rather than blank on a correction.
+
+    ``only_students`` narrows the roster for a family portal. A parent holds
+    attendance:read for their own child; without this the same permission handed
+    them every classmate's name and whether they turned up.
+    """
     sid = ObjectId(section_id)
     section = await collection(C.SECTIONS).find_one({"_id": sid, "tenant_id": tenant.id})
     if section is None:
         raise NotFound("Section not found")
 
+    roster_query: dict[str, Any] = {
+        "tenant_id": tenant.id, "current_section_id": sid, "status": "active",
+        "is_deleted": {"$ne": True},
+    }
+    if only_students is not None:
+        roster_query["_id"] = {"$in": only_students}
+
     students = await collection(C.STUDENTS).find(
-        {"tenant_id": tenant.id, "current_section_id": sid, "status": "active",
-         "is_deleted": {"$ne": True}},
+        roster_query,
         {"first_name": 1, "middle_name": 1, "last_name": 1, "roll_number": 1,
          "admission_number": 1, "photo": 1},
     ).sort([("roll_number", 1)]).to_list(length=500)
