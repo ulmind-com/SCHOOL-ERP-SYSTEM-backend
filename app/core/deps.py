@@ -58,14 +58,21 @@ async def get_optional_tenant(
     request: Request,
     credentials: BearerDep = None,
     x_tenant: TenantHeader = None,
+    x_academic_year: YearHeader = None,
 ) -> TenantContext | None:
     payload = decode_token(credentials.credentials) if credentials else None
-    return await resolve_tenant(
+    tenant = await resolve_tenant(
         token_tenant_id=(payload or {}).get("tid"),
         header_tenant=x_tenant,
         host=request.headers.get("host"),
         required=False,
     )
+    # /auth/me resolves the tenant through this one, and it is what tells the
+    # client which year it is reading — leaving the header out here meant the
+    # data switched and the label did not.
+    if tenant is not None:
+        await apply_academic_year(tenant, x_academic_year)
+    return tenant
 
 
 async def apply_academic_year(tenant: TenantContext, requested: str | None) -> None:
