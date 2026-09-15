@@ -332,6 +332,18 @@ async def fee_plan(tenant: TenantContext, student_id: str) -> dict[str, Any]:
                 "amount": billed, "paid": paid, "balance": balance, "status": status,
                 "raised": True,
                 "payable": balance > 0 and entry["window_open"],
+                # Once billed, what the invoice says beats what the schedule
+                # predicted — an office that bundled two cycles onto one bill
+                # would otherwise show a family lines that do not add up to it.
+                "lines": [
+                    {
+                        "description": line.get("description") or "Fee",
+                        "detail": "",
+                        "amount": money(line.get("net", line.get("amount", 0))),
+                        "optional": False,
+                    }
+                    for line in invoice.get("lines", [])
+                ] or entry["lines"],
             })
         else:
             # Not raised yet: the family can still see it coming, but there is
