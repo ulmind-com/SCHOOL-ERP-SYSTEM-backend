@@ -133,3 +133,24 @@ async def lock(payload: LockRequest, auth: Admin, tenant: TenantDep, request: Re
     await record(auth, "attendance.lock", entity_type="attendance",
                  changes={"locked": payload.locked}, request=request)
     return result
+
+
+@router.get("/holidays/{holiday_id}/conflicts",
+            summary="Attendance already taken on days this holiday covers")
+async def holiday_conflicts(holiday_id: str, auth: Reader, tenant: TenantDep):
+    return await service.holiday_conflicts(tenant, holiday_id)
+
+
+@router.post("/holidays/{holiday_id}/release",
+             summary="Restate that attendance as holiday")
+async def release_holiday(
+    holiday_id: str, auth: Taker, tenant: TenantDep, request: Request
+):
+    """Keeps the rows — a register genuinely was taken — but takes the days out
+    of everyone's percentage, which is what declaring the holiday meant."""
+    result = await service.release_holiday_attendance(tenant, auth, holiday_id)
+    if result["updated"]:
+        await record(auth, "attendance.holiday_released", entity_type="holidays",
+                     entity_id=holiday_id, entity_label=result["holiday"]["name"],
+                     changes={"updated": result["updated"]}, request=request)
+    return result

@@ -80,6 +80,92 @@ async def holiday_on(
     return found[0]
 
 
+async def holiday_conflicts(tenant: TenantContext, holiday_id: str) -> dict[str, Any]:
+    """Attendance already recorded on days this holiday now covers.
+
+    Schools declare a holiday after the fact — a bandh, a cremation, a day the
+    board moved. The registers for those days already exist and say children
+    attended, which is both untrue and counted against everyone's percentage.
+    """
+    holiday = await collection(C.HOLIDAYS).find_one(
+        {"_id": ObjectId(holiday_id), "tenant_id": tenant.id, "is_deleted": {"$ne": True}}
+    )
+    if holiday is None:
+        raise NotFound("Holiday not found")
+
+    start = holiday["start_date"]
+    end = holiday.get("end_date") or holiday["start_date"]
+    query: dict[str, Any] = {
+        "tenant_id": tenant.id,
+        "date": {"$gte": as_datetime(start.date()), "$lte": as_datetime(end.date())},
+        "status": {"$nin": list(NON_TEACHING)},
+        "is_deleted": {"$ne": True},
+    }
+    classes = holiday.get("class_ids") or []
+    if classes:
+        query["class_id"] = {"$in": classes}
+
+    records = await collection(C.ATTENDANCE).count_documents(query)
+    dates = await collection(C.ATTENDANCE).distinct("date", query)
+    return {
+        "holiday": {"id": str(holiday["_id"]), "name": holiday.get("name", ""),
+                    "attendance_required": bool(holiday.get("attendance_required"))},
+        "records": records,
+        "dates": sorted(d.date().isoformat() for d in dates),
+        "detail": (
+            f"{records} attendance record(s) were taken on "
+            f"{len(dates)} day(s) this holiday now covers."
+            if records else "No attendance was recorded on these days."
+        ),
+    }
+
+
+async def release_holiday_attendance(
+    tenant: TenantContext, auth: AuthContext, holiday_id: str
+) -> dict[str, Any]:
+    """Restate those records as holiday, rather than deleting them.
+
+    The register was genuinely taken — someone stood in a room — so erasing it
+    loses a fact. Restating it keeps the row and takes the day out of the
+    percentage, which is what the school actually meant.
+    """
+    conflicts = await holiday_conflicts(tenant, holiday_id)
+    if conflicts["holiday"]["attendance_required"]:
+        raise ValidationError(
+            "That holiday is marked as one where attendance is still taken. "
+            "Turn that off first if the institution was closed."
+        )
+    if not conflicts["records"]:
+        return {**conflicts, "updated": 0}
+
+    holiday = await collection(C.HOLIDAYS).find_one({"_id": ObjectId(holiday_id)})
+    start = holiday["start_date"]
+    end = holiday.get("end_date") or holiday["start_date"]
+    query: dict[str, Any] = {
+        "tenant_id": tenant.id,
+        "date": {"$gte": as_datetime(start.date()), "$lte": as_datetime(end.date())},
+        "status": {"$nin": list(NON_TEACHING)},
+        "is_deleted": {"$ne": True},
+    }
+    classes = holiday.get("class_ids") or []
+    if classes:
+        query["class_id"] = {"$in": classes}
+
+    result = await collection(C.ATTENDANCE).update_many(
+        query,
+        {"$set": {"status": "holiday", "remark": holiday.get("name", "Holiday"),
+                  "updated_at": utcnow(), "updated_by": auth.user_id}},
+    )
+    return {
+        **conflicts,
+        "updated": result.modified_count,
+        "detail": (
+            f"{result.modified_count} record(s) restated as {holiday.get('name', 'holiday')}. "
+            "Those days no longer count for or against anyone."
+        ),
+    }
+
+
 async def get_register(
     tenant: TenantContext,
     *,
