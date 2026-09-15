@@ -257,6 +257,21 @@ class TestRowScoping:
         for fn in (get_register, take_register):
             assert "assert_may_open_section" in inspect.getsource(fn), fn.__name__
 
+    def test_a_family_reads_their_own_bus_and_not_the_vehicle_register(self):
+        """transport:read was granted so a parent can follow their child's bus.
+        The vehicle register is a different thing — driver licence numbers,
+        phone numbers, insurance papers — so the grant is scoped, not widened."""
+        from app.core.scoping import staff_only_scope
+        from app.modules.registry import RESOURCES
+
+        vehicles = next(r for r in RESOURCES if r.name == "transport/vehicles")
+        assert vehicles.scope_hook is staff_only_scope
+
+        for portal in ("parent", "student"):
+            scope = asyncio.run(staff_only_scope(self._auth(portal=portal), _tenant()))
+            assert scope == {"_id": {"$in": []}}, portal
+        assert asyncio.run(staff_only_scope(self._auth(portal="admin"), _tenant())) == {}
+
     def test_a_family_cannot_switch_academic_year(self):
         """Staff browse back through the years; a child is in one at a time,
         and last year's register is not theirs to open from the portal."""

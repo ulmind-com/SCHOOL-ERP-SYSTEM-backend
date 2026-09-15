@@ -98,6 +98,18 @@ async def teacher_section_scope(
     return {"section_ids": {"$in": sections}}
 
 
+async def staff_only_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
+    """Nothing at all for a family.
+
+    For registers a family holds a read permission over but has no business in:
+    the vehicle register carries driver licence numbers, phone numbers and
+    insurance papers, none of which is "where is my child's bus".
+    """
+    if auth.portal in FAMILY_PORTALS or auth.student_id or auth.guardian_id:
+        return {"_id": {"$in": []}}
+    return {}
+
+
 async def teacher_own_sections_scope(
     auth: AuthContext, tenant: TenantContext
 ) -> dict[str, Any]:

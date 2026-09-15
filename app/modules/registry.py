@@ -14,6 +14,7 @@ from app.core.scoping import (
     all_of,
     assignment_reach_scope,
     family_class_scope,
+    staff_only_scope,
     student_row_scope,
     teacher_own_sections_scope,
 )
@@ -403,6 +404,9 @@ RESOURCES: list[Resource] = [
         search_fields=["registration_number", "model", "driver_name"],
         filters=["status", "type"], sortable=["registration_number"],
         default_sort_dir="asc", unique_fields=["registration_number"],
+        # Driver licence numbers, phone numbers and insurance papers. A family
+        # holds transport:read for their own bus, which is a different thing.
+        scope_hook=staff_only_scope,
     ),
     Resource(
         name="transport/routes", collection=C.TRANSPORT_ROUTES, module="transport",

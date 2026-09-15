@@ -299,7 +299,10 @@ ROLE_PRESETS: tuple[RolePreset, ...] = (
         "student", "Student", "Self-service portal.",
         [*_read("dashboard", "timetable", "subjects", "syllabus", "attendance",
                 "assignments", "results", "lms", "events", "announcements", "invoices",
-                "library", "documents"),
+                "library", "documents",
+                # Their own bus. The transport rows are scoped the same way the
+                # register and the invoice list are, so this grant means "mine".
+                "transport"),
          # Deliberately no assignments:update: that is what grades a submission,
          # and it also opened the edit drawer on the assignment itself. Handing
          # in homework goes through /homework/submit, which needs nothing more
@@ -311,7 +314,8 @@ ROLE_PRESETS: tuple[RolePreset, ...] = (
     RolePreset(
         "parent", "Parent / Guardian", "Follows their children's progress and dues.",
         [*_read("dashboard", "attendance", "assignments", "results", "timetable",
-                "events", "announcements", "invoices", "payments", "documents"),
+                "events", "announcements", "invoices", "payments", "documents",
+                "transport"),
          "messages:*", "complaints:create", "complaints:read", "leaves:create"],
         portal="parent",
     ),
