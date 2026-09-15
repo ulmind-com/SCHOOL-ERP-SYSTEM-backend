@@ -75,6 +75,8 @@ NAVIGATION: tuple[NavGroup, ...] = (
     NavGroup("Academics", (
         NavItem("academic-years", "Academic Years", "/academics/years", "calendar-range",
                 "academic_years:read"),
+        NavItem("holidays", "Holidays", "/academics/holidays", "calendar-off",
+                "academic_years:read", module="academic_years"),
         NavItem("classes", "Classes & Sections", "/academics/classes", "layers", "classes:read"),
         NavItem("subjects", "Subjects", "/academics/subjects", "book-open", "subjects:read"),
         NavItem("departments", "Departments", "/academics/departments", "building-2",

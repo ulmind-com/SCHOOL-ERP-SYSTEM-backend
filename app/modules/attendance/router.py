@@ -34,6 +34,9 @@ class TakeRegisterRequest(AppModel):
     subject_id: str | None = None
     period_id: str | None = None
     notes: str = ""
+    #: Take the register anyway on a day the institution is closed — an extra
+    #: class, a make-up session. Deliberate, never the default.
+    despite_holiday: bool = False
 
 
 class LockRequest(AppModel):
@@ -72,6 +75,7 @@ async def take_register(
         subject_id=payload.subject_id,
         period_id=payload.period_id,
         notes=payload.notes,
+        despite_holiday=payload.despite_holiday,
     )
     await record(auth, "attendance.taken", entity_type="attendance",
                  entity_label=f"{payload.section_id} {payload.date}",

@@ -29,6 +29,12 @@ RESOURCES: list[Resource] = [
         unique_fields=["name"],
     ),
     Resource(
+        name="holidays", collection=C.HOLIDAYS, module="academic_years", model=ac.Holiday,
+        tags=["Academics"], search_fields=["name", "description"],
+        filters=["type", "academic_year_id", "is_active", "attendance_required"],
+        sortable=["start_date", "name"], default_sort_dir="asc",
+    ),
+    Resource(
         name="terms", collection=C.TERMS, module="academic_years", model=ac.Term,
         tags=["Academics"], search_fields=["name"],
         filters=["academic_year_id", "type", "is_current"], sortable=["order", "start_date"],

@@ -26,6 +26,60 @@ def as_datetime(on: date) -> datetime:
     return datetime(on.year, on.month, on.day, tzinfo=UTC)
 
 
+#: Statuses that mean "no teaching happened", so they belong in neither half of
+#: an attendance percentage. Counting a holiday as a day the child missed is how
+#: a 100% attender ends up looking like an 80% one.
+NON_TEACHING = {"holiday", "excused"}
+
+
+async def holidays_between(
+    tenant: TenantContext, start: date, end: date, class_id: ObjectId | None = None
+) -> list[dict[str, Any]]:
+    """Every holiday overlapping the range, narrowed to a class if given."""
+    query: dict[str, Any] = {
+        "tenant_id": tenant.id,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+        "start_date": {"$lte": as_datetime(end)},
+        "$or": [
+            {"end_date": {"$gte": as_datetime(start)}},
+            {"end_date": None},
+            {"end_date": {"$exists": False}},
+        ],
+    }
+    rows = await collection(C.HOLIDAYS).find(query).sort([("start_date", 1)]).to_list(
+        length=500
+    )
+    out = []
+    for row in rows:
+        classes = row.get("class_ids") or []
+        # No classes named means the whole institution is off.
+        if classes and class_id is not None and class_id not in classes:
+            continue
+        first = row["start_date"].date()
+        last = (row.get("end_date") or row["start_date"]).date()
+        if last < start or first > end:
+            continue
+        out.append({**row, "_first": first, "_last": last})
+    return out
+
+
+async def holiday_on(
+    tenant: TenantContext, on: date, class_id: ObjectId | None = None
+) -> dict[str, Any] | None:
+    """The holiday covering this date, or ``None``.
+
+    When several overlap — a festival inside a vacation — the one that still
+    requires a register wins, because that is the stricter statement about
+    whether the school is open.
+    """
+    found = await holidays_between(tenant, on, on, class_id)
+    if not found:
+        return None
+    found.sort(key=lambda h: not h.get("attendance_required"))
+    return found[0]
+
+
 async def get_register(
     tenant: TenantContext,
     *,
@@ -65,6 +119,8 @@ async def get_register(
     ).to_list(length=500)
     marked = {r["student_id"]: r for r in existing}
 
+    holiday = await holiday_on(tenant, on, section.get("class_id"))
+
     session = await collection(C.ATTENDANCE_SESSIONS).find_one(
         {"tenant_id": tenant.id, "section_id": sid, "date": as_datetime(on),
          "session_key": session_key}
@@ -101,6 +157,19 @@ async def get_register(
         "is_locked": bool((session or {}).get("is_locked")),
         "summary": summary,
         "students": rows,
+        # A holiday the school still teaches on — a founder's day, a sports day
+        # — is a normal register with a note on it; one it is shut for is not a
+        # register at all.
+        "holiday": {
+            "id": str(holiday["_id"]),
+            "name": holiday.get("name", ""),
+            "type": holiday.get("type", "public"),
+            "description": holiday.get("description", ""),
+            "attendance_required": bool(holiday.get("attendance_required")),
+            "start_date": holiday["_first"].isoformat(),
+            "end_date": holiday["_last"].isoformat(),
+        } if holiday else None,
+        "can_take": holiday is None or bool(holiday.get("attendance_required")),
     }
 
 
@@ -115,6 +184,7 @@ async def take_register(
     subject_id: str | None = None,
     period_id: str | None = None,
     notes: str = "",
+    despite_holiday: bool = False,
 ) -> dict[str, Any]:
     """Write a whole register in one round trip.
 
@@ -127,6 +197,17 @@ async def take_register(
     section = await collection(C.SECTIONS).find_one({"_id": sid, "tenant_id": tenant.id})
     if section is None:
         raise NotFound("Section not found")
+
+    # A school that is shut has no register to take. Refusing here rather than
+    # only in the browser is what stops a holiday quietly becoming a day forty
+    # children were marked absent.
+    holiday = await holiday_on(tenant, on, section.get("class_id"))
+    if holiday and not holiday.get("attendance_required") and not despite_holiday:
+        raise ValidationError(
+            f"{on.isoformat()} is {holiday.get('name', 'a holiday')} and the register is "
+            "closed. Turn on 'attendance is taken' for that holiday, or confirm you are "
+            "taking it anyway."
+        )
 
     existing_session = await collection(C.ATTENDANCE_SESSIONS).find_one(
         {"tenant_id": tenant.id, "section_id": sid, "date": as_datetime(on),

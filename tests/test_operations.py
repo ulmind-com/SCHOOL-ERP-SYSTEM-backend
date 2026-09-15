@@ -8,6 +8,7 @@ from bson import ObjectId
 from app.core.context import AuthContext, TenantContext
 from app.core.permissions import ROLE_PRESETS_BY_KEY, expand
 from app.modules.ai.service import FAMILY_PORTALS, tools_for
+from app.modules.attendance.service import NON_TEACHING
 from app.modules.library.service import _rules, fine_for
 from app.modules.payroll.service import compute_payslip, period_bounds, working_days_in
 
@@ -207,3 +208,25 @@ class TestPaymentVerification:
 
         with pytest.raises(PaymentsDisabled):
             RazorpayGateway()
+
+
+class TestHolidaysAndAttendance:
+    """A holiday is not a day the child missed."""
+
+    def test_non_teaching_statuses_are_named(self):
+        """The set is what keeps holidays out of both halves of a percentage."""
+        assert "holiday" in NON_TEACHING
+        assert "present" not in NON_TEACHING and "absent" not in NON_TEACHING
+
+    def test_holiday_does_not_drag_the_percentage_down(self):
+        counts = {"present": 8, "absent": 2, "holiday": 10}
+        teaching = {k: v for k, v in counts.items() if k not in NON_TEACHING}
+        total = sum(teaching.values())
+        present = teaching.get("present", 0) + teaching.get("late", 0)
+        assert total == 10
+        assert round(present / total * 100, 2) == 80.0
+
+    def test_counting_the_holiday_would_have_halved_it(self):
+        """What the arithmetic used to say, kept as the reason for the fix."""
+        counts = {"present": 8, "absent": 2, "holiday": 10}
+        assert round(8 / sum(counts.values()) * 100, 2) == 40.0

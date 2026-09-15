@@ -291,18 +291,68 @@ async def attendance_calendar(
          "is_deleted": {"$ne": True}},
         projection={"date": 1, "status": 1, "remark": 1},
     ).sort([("date", -1)]).to_list(length=days)
-    out = []
-    for row in reversed(rows):
+    by_date: dict[str, dict[str, Any]] = {}
+    for row in rows:
         date_value = row.get("date")
         if not date_value:
             continue
-        out.append({
-            "date": date_value.date().isoformat() if hasattr(date_value, "date")
-            else str(date_value)[:10],
+        key = (
+            date_value.date().isoformat() if hasattr(date_value, "date")
+            else str(date_value)[:10]
+        )
+        by_date[key] = {
+            "date": key,
             "status": row.get("status", ""),
             "remark": row.get("remark", ""),
-        })
-    return out
+        }
+
+    # Holidays carry no attendance row — nobody marked anything — so without
+    # this the school's longest break reads as a stretch of blank squares.
+    if by_date:
+        await _overlay_holidays(tenant_id, student_id, by_date)
+
+    return [by_date[key] for key in sorted(by_date)]
+
+
+async def _overlay_holidays(
+    tenant_id: ObjectId, student_id: ObjectId, by_date: dict[str, dict[str, Any]]
+) -> None:
+    """Paint the institution's holidays onto a student's calendar.
+
+    Only inside the range the calendar already covers, and only where nothing
+    was marked: a holiday the school taught through has a real register, and
+    that register is the truth about the day.
+    """
+    from datetime import date as _date
+    from datetime import timedelta
+
+    student = await collection(C.STUDENTS).find_one(
+        {"_id": student_id}, projection={"current_class_id": 1}
+    )
+    class_id = (student or {}).get("current_class_id")
+
+    first = _date.fromisoformat(min(by_date))
+    last = _date.fromisoformat(max(by_date))
+    holidays = await collection(C.HOLIDAYS).find({
+        "tenant_id": tenant_id, "is_active": True, "is_deleted": {"$ne": True},
+    }).to_list(length=500)
+
+    for holiday in holidays:
+        classes = holiday.get("class_ids") or []
+        if classes and class_id is not None and class_id not in classes:
+            continue
+        start = holiday["start_date"].date()
+        end = (holiday.get("end_date") or holiday["start_date"]).date()
+        day = max(start, first)
+        while day <= min(end, last):
+            key = day.isoformat()
+            if key not in by_date:
+                by_date[key] = {
+                    "date": key,
+                    "status": "holiday",
+                    "remark": holiday.get("name", "Holiday"),
+                }
+            day += timedelta(days=1)
 
 
 async def exam_results(tenant_id: ObjectId, student_id: ObjectId) -> list[dict[str, Any]]:
@@ -398,14 +448,24 @@ async def attendance_summary(tenant_id: ObjectId, student_id: ObjectId) -> dict[
         ]
     ).to_list(length=None)
     counts = {r["_id"]: r["n"] for r in rows}
-    total = sum(counts.values())
-    present = counts.get("present", 0) + counts.get("late", 0) + counts.get("half_day", 0) * 0.5
+    # A holiday is not a day the child missed. Leaving it in the denominator is
+    # how someone with a perfect record ends up reading as eighty per cent.
+    from app.modules.attendance.service import NON_TEACHING
+
+    teaching = {k: v for k, v in counts.items() if k not in NON_TEACHING}
+    total = sum(teaching.values())
+    present = (
+        teaching.get("present", 0)
+        + teaching.get("late", 0)
+        + teaching.get("half_day", 0) * 0.5
+    )
     return {
         "total_days": total,
         "present": counts.get("present", 0),
         "absent": counts.get("absent", 0),
         "late": counts.get("late", 0),
         "leave": counts.get("leave", 0),
+        "holiday": counts.get("holiday", 0),
         "percentage": round(present / total * 100, 2) if total else 0.0,
     }
 

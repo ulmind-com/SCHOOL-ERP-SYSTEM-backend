@@ -32,6 +32,35 @@ class AcademicYear(TenantDocument):
     description: str = ""
 
 
+class Holiday(TenantDocument):
+    """A day the institution is closed — or open but not teaching.
+
+    Kept apart from Events because the attendance register has to consult it on
+    every open, and an event is a notice board entry that may or may not mean
+    anything to the register.
+    """
+
+    name: str                       # "Durga Puja", "Independence Day"
+    start_date: datetime
+    #: Inclusive. ``None`` means the holiday is one day long.
+    end_date: datetime | None = None
+    type: str = "public"            # public | festival | vacation | exam_break | other
+    description: str = ""
+    #: Whether a register is still taken. A celebrated holiday happens *at*
+    #: school — Independence Day, sports day, a founder's day — so the children
+    #: are present and their attendance counts. Off means the school is shut.
+    attendance_required: bool = False
+    #: Empty means the whole institution. A class that has an exam through the
+    #: break can be left out of it.
+    class_ids: list[PyObjectId] = Field(default_factory=list)
+    academic_year_id: PyObjectId | None = None
+    is_active: bool = True
+
+    @property
+    def last_date(self) -> datetime:
+        return self.end_date or self.start_date
+
+
 class Term(TenantDocument):
     academic_year_id: PyObjectId
     name: str                      # "Semester 1", "Term 2"

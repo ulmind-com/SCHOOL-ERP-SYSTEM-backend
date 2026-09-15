@@ -106,6 +106,7 @@ class C:
 
     # Academics
     ACADEMIC_YEARS = "academic_years"
+    HOLIDAYS = "holidays"
     TERMS = "terms"
     DEPARTMENTS = "departments"
     PROGRAMS = "programs"

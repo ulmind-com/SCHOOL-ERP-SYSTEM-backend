@@ -54,6 +54,11 @@ INDEXES: dict[str, list[IndexModel]] = {
                        IndexModel([("actor_id", ASCENDING)])],
 
     # ── Identity ──────────────────────────────────────────────────────────
+    C.HOLIDAYS: [
+        # The register looks these up by date on every open, for one tenant.
+        IndexModel([(T, ASCENDING), ("start_date", ASCENDING), ("end_date", ASCENDING)]),
+        _i("academic_year_id"),
+    ],
     C.USERS: [
         _u("email"),
         # Not unique: a parent and their child can legitimately share one number.
