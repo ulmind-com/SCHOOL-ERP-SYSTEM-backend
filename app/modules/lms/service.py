@@ -300,6 +300,48 @@ async def submit_homework(
     }
 
 
+async def assert_teacher_reaches(
+    tenant: TenantContext, auth: AuthContext, assignment_id: str
+) -> dict[str, Any]:
+    """A teacher may open the roster of work that reaches them, and no other.
+
+    The list is already narrowed; this is the same rule applied to a route that
+    takes an id, because otherwise the narrowing is only a suggestion.
+    """
+    from app.core.scoping import assignment_reach_scope
+
+    query: dict[str, Any] = {
+        "_id": ObjectId(assignment_id), "tenant_id": tenant.id,
+        "is_deleted": {"$ne": True},
+    }
+    scope = await assignment_reach_scope(auth, tenant)
+    if scope:
+        query = {"$and": [query, scope]}
+    assignment = await collection(C.ASSIGNMENTS).find_one(query)
+    if assignment is None:
+        raise NotFound("Assignment not found")
+    return assignment
+
+
+async def staff_names(
+    tenant: TenantContext, ids: list[ObjectId]
+) -> dict[ObjectId, str]:
+    """Who set the work. A student reading "Mathematics · Homework" still wants
+    to know whose it is, and so does the office six months later."""
+    wanted = [i for i in set(ids) if isinstance(i, ObjectId)]
+    if not wanted:
+        return {}
+    return {
+        doc["_id"]: " ".join(
+            filter(None, [doc.get("first_name"), doc.get("last_name")])
+        ) or doc.get("full_name", "")
+        for doc in await collection(C.STAFF).find(
+            {"_id": {"$in": wanted}, "tenant_id": tenant.id},
+            {"first_name": 1, "last_name": 1, "full_name": 1},
+        ).to_list(length=len(wanted))
+    }
+
+
 async def expected_students(
     tenant: TenantContext, assignment: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -567,8 +609,10 @@ async def assignment_submissions(
             "collected_offline": bool(submission.get("collected_offline")) if submission else False,
         })
 
+    names = await staff_names(tenant, [assignment.get("assigned_by")])
     return {
         "assignment": serialize_doc(assignment),
+        "set_by": names.get(assignment.get("assigned_by"), ""),
         "submission_mode": assignment.get("submission_mode", "online"),
         "expected": len(expected),
         "submitted": sum(1 for r in rows if r["status"] != "pending"),
@@ -634,6 +678,7 @@ async def _assignments_for_student(
         s["_id"]: s.get("name", "")
         for s in await collection(C.SUBJECTS).find({"tenant_id": tenant.id}).to_list(None)
     }
+    teachers = await staff_names(tenant, [a.get("assigned_by") for a in assignments])
 
     out = []
     for assignment in assignments:
@@ -641,6 +686,7 @@ async def _assignments_for_student(
         due = assignment.get("due_date")
         row = serialize_doc(assignment) or {}
         row["subject_name"] = subjects.get(assignment.get("subject_id"), "")
+        row["set_by"] = teachers.get(assignment.get("assigned_by"), "")
         row["my_status"] = submission.get("status") if submission else "pending"
         row["my_marks"] = submission.get("marks") if submission else None
         row["my_feedback"] = submission.get("feedback", "") if submission else ""

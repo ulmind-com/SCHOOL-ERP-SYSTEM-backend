@@ -43,7 +43,7 @@ async def login(payload: LoginRequest, request: Request, tenant: OptionalTenantD
     return LoginResponse(
         tokens=tokens,
         user=service.session_user(user, auth),
-        institution=await service.session_institution(resolved),
+        institution=await service.session_institution(resolved, auth),
         must_change_password=bool(user.get("must_change_password")),
     )
 
@@ -92,7 +92,7 @@ async def me(auth: CurrentUser, tenant: OptionalTenantDep = None):
     return MeResponse(
         user=service.session_user(user, auth),
         institution=(
-            await service.session_institution(tenant)
+            await service.session_institution(tenant, auth)
             if tenant is not None and not auth.is_platform else None
         ),
         navigation=build_navigation(auth, tenant),
@@ -152,5 +152,5 @@ async def accept_invite(payload: AcceptInviteRequest, request: Request):
     return LoginResponse(
         tokens=tokens,
         user=service.session_user(user, auth),
-        institution=await service.session_institution(tenant),
+        institution=await service.session_institution(tenant, auth),
     )

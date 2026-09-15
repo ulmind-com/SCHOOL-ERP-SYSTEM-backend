@@ -10,9 +10,11 @@ from app.core.crud import Resource, build_crud_router, check_unique, make_create
 from app.core.deps import TenantDep, require
 from app.core.exceptions import ValidationError
 from app.core.scoping import (
+    all_of,
     assert_may_see_student,
     own_student_scope,
     student_row_scope,
+    teacher_student_scope,
 )
 from app.db.mongo import C, collection
 from app.db.repository import Repository
@@ -29,7 +31,10 @@ router = APIRouter()
 #: top of the tenant filter, so a portal user cannot widen it by guessing query
 #: parameters. Shared with every other student-keyed resource — see
 #: ``app.core.scoping``.
-student_scope = own_student_scope
+#: A family sees their own children; a teacher sees the sections they take this
+#: academic year. Both narrowings are the same kind of statement — a read
+#: permission says *whether*, never *whose*.
+student_scope = all_of(own_student_scope, teacher_student_scope)
 
 
 async def staff_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:

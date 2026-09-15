@@ -7,6 +7,7 @@ to perform the action.
 
 from __future__ import annotations
 
+import time
 from typing import Annotated
 
 from bson import ObjectId
@@ -32,6 +33,7 @@ bearer = HTTPBearer(auto_error=False, description="Bearer access token")
 
 BearerDep = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
 TenantHeader = Annotated[str | None, Header(alias="X-Tenant")]
+YearHeader = Annotated[str | None, Header(alias="X-Academic-Year")]
 
 
 # ── Tenant ────────────────────────────────────────────────────────────────
@@ -39,6 +41,7 @@ async def get_tenant(
     request: Request,
     credentials: BearerDep = None,
     x_tenant: TenantHeader = None,
+    x_academic_year: YearHeader = None,
 ) -> TenantContext:
     payload = decode_token(credentials.credentials) if credentials else None
     tenant = await resolve_tenant(
@@ -47,6 +50,7 @@ async def get_tenant(
         host=request.headers.get("host"),
     )
     assert tenant is not None  # resolve_tenant raises when required and missing
+    await apply_academic_year(tenant, x_academic_year)
     return tenant
 
 
@@ -62,6 +66,45 @@ async def get_optional_tenant(
         host=request.headers.get("host"),
         required=False,
     )
+
+
+async def apply_academic_year(tenant: TenantContext, requested: str | None) -> None:
+    """Honour an ``X-Academic-Year`` header, if it names a real year here.
+
+    Validated against the institution's own years rather than trusted, so the
+    header can only ever move the reader between that school's years — an
+    unknown id silently leaves them on the current one rather than showing them
+    an empty school and no reason why.
+
+    Who may actually use it is :meth:`TenantContext.year_for`'s business; this
+    only resolves it.
+    """
+    if not requested:
+        return
+    year_id = oid(requested)
+    if year_id is None or year_id == tenant.current_academic_year_id:
+        return
+    if year_id in await academic_year_ids(tenant.id):
+        tenant.active_academic_year_id = year_id
+
+
+_YEAR_CACHE: dict[str, tuple[float, set[ObjectId]]] = {}
+_YEAR_CACHE_TTL = 60.0
+
+
+async def academic_year_ids(tenant_id: ObjectId) -> set[ObjectId]:
+    """Every academic year this institution has, cached — it changes once a year."""
+    key = str(tenant_id)
+    hit = _YEAR_CACHE.get(key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    ids = set(
+        await collection(C.ACADEMIC_YEARS).distinct(
+            "_id", {"tenant_id": tenant_id, "is_deleted": {"$ne": True}}
+        )
+    )
+    _YEAR_CACHE[key] = (time.monotonic() + _YEAR_CACHE_TTL, ids)
+    return ids
 
 
 TenantDep = Annotated[TenantContext, Depends(get_tenant)]

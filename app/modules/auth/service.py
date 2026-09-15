@@ -99,12 +99,33 @@ def session_user(user: dict[str, Any], auth: AuthContext) -> SessionUser:
     )
 
 
-async def session_institution(tenant: TenantContext) -> SessionInstitution:
+async def session_institution(
+    tenant: TenantContext, auth: AuthContext | None = None
+) -> SessionInstitution:
     usage = await _usage_snapshot(tenant)
+    years = [
+        {
+            "id": str(doc["_id"]),
+            "name": doc.get("name", ""),
+            "is_current": doc["_id"] == tenant.current_academic_year_id,
+            "status": doc.get("status", "active"),
+            "start_date": doc["start_date"].isoformat() if doc.get("start_date") else None,
+            "end_date": doc["end_date"].isoformat() if doc.get("end_date") else None,
+        }
+        for doc in await collection(C.ACADEMIC_YEARS).find({
+            "tenant_id": tenant.id, "is_deleted": {"$ne": True},
+        }).sort([("start_date", -1)]).to_list(length=50)
+    ]
     year = None
     if tenant.current_academic_year_id:
         doc = await collection(C.ACADEMIC_YEARS).find_one({"_id": tenant.current_academic_year_id})
         year = serialize_doc(doc)
+
+    # A family never gets the switcher, so it is never sent the years either.
+    family = auth is not None and (
+        auth.portal in {"student", "parent"} or auth.student_id or auth.guardian_id
+    )
+    reading = tenant.year_for(auth) if auth else tenant.current_academic_year_id
     return SessionInstitution(
         id=str(tenant.id),
         slug=tenant.slug,
@@ -127,6 +148,9 @@ async def session_institution(tenant: TenantContext) -> SessionInstitution:
         enabled_modules=sorted(
             key for key in ALL_MODULE_KEYS if tenant.module_enabled(key)
         ),
+        academic_years=[] if family else years,
+        active_academic_year_id=str(reading) if reading else None,
+        can_switch_academic_year=not family and len(years) > 1,
         limits={
             "max_students": tenant.limits.max_students,
             "max_staff": tenant.limits.max_staff,

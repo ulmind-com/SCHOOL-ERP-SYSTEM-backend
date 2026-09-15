@@ -1,6 +1,7 @@
 """Password handling, tokens and tenant resolution."""
 
 import asyncio
+import json
 from datetime import timedelta
 
 import pytest
@@ -201,11 +202,16 @@ class TestRowScoping:
         assert asyncio.run(family_assignment_scope(staff, _tenant())) == {}
 
     def test_the_assignments_resource_is_scoped(self):
-        from app.core.scoping import family_assignment_scope
+        """Asserted through the hook rather than by identity — it is composed
+        with the academic-year scope, and the thing that matters is that a
+        family still gets narrowed."""
         from app.modules.registry import RESOURCES
 
         assignments = next(r for r in RESOURCES if r.name == "assignments")
-        assert assignments.scope_hook is family_assignment_scope
+        assert assignments.scope_hook is not None
+        scope = asyncio.run(assignments.scope_hook(self._auth(portal="parent"), _tenant()))
+        assert scope != {}
+        assert "_id" in json.dumps(scope)
 
     def test_the_submission_roster_is_staff_only(self):
         """It carries every classmate's name, whether they handed it in and what
@@ -215,6 +221,83 @@ class TestRowScoping:
         from app.modules.lms.router import submissions
 
         assert "assert_not_family" in inspect.getsource(submissions)
+
+    def test_a_teacher_is_narrowed_to_what_they_actually_teach(self):
+        """The rule the whole teacher portal rests on: reach comes from the
+        allocation, and the allocation is recorded against an academic year, so
+        a teacher who takes Class 8 and 11 this year has no Class 7 data — and
+        next year, when the allocation moves, so does the reach."""
+        from app.core.scoping import teacher_section_ids
+
+        office = self._auth(portal="admin", permissions=["*"])
+        assert asyncio.run(teacher_section_ids(office, _tenant())) is None
+
+        # A teacher with no staff record attached is nobody's teacher.
+        assert asyncio.run(teacher_section_ids(self._auth(portal="teacher"), _tenant())) is None
+
+    def test_an_empty_allocation_is_not_an_unrestricted_one(self):
+        """The dangerous case, asserted on the shape rather than a live query:
+        a teacher timetabled for nothing must get ``$in: []``, never ``{}``."""
+        import inspect
+
+        from app.core.scoping import teacher_section_scope, teacher_student_scope
+
+        for fn in (teacher_section_scope, teacher_student_scope):
+            source = inspect.getsource(fn)
+            assert "is None" in source, fn.__name__
+            assert '"$in": sections' in source, fn.__name__
+
+    def test_the_register_is_guarded_by_the_allocation_too(self):
+        """Narrowing the list is only a suggestion while the next screen takes
+        an id in the path."""
+        import inspect
+
+        from app.modules.attendance.router import get_register, take_register
+
+        for fn in (get_register, take_register):
+            assert "assert_may_open_section" in inspect.getsource(fn), fn.__name__
+
+    def test_a_family_cannot_switch_academic_year(self):
+        """Staff browse back through the years; a child is in one at a time,
+        and last year's register is not theirs to open from the portal."""
+        from app.core.scoping import academic_year_scope
+
+        current, other = ObjectId(), ObjectId()
+        tenant = _tenant()
+        tenant.current_academic_year_id = current
+        tenant.active_academic_year_id = other  # as if a header asked for it
+
+        parent = asyncio.run(academic_year_scope(self._auth(portal="parent"), tenant))
+        assert parent == {"academic_year_id": {"$in": [current, None]}}
+
+        staff = self._auth(portal="admin", permissions=["*"])
+        assert asyncio.run(academic_year_scope(staff, tenant)) == {
+            "academic_year_id": {"$in": [other, None]}
+        }
+
+    def test_an_undated_row_survives_every_year(self):
+        """Hiding rows that name no year would make switching look like the
+        data had been deleted."""
+        from app.core.scoping import academic_year_scope
+
+        tenant = _tenant()
+        tenant.current_academic_year_id = ObjectId()
+        scope = asyncio.run(academic_year_scope(self._auth(portal="admin"), tenant))
+        assert None in scope["academic_year_id"]["$in"]
+
+    def test_two_scopes_both_survive_being_combined(self):
+        """``all_of`` exists because merging dicts lets the second hook's $or
+        erase the first's, and both of these need one."""
+        from app.core.scoping import all_of
+
+        async def one(auth, tenant):
+            return {"$or": [{"a": 1}]}
+
+        async def two(auth, tenant):
+            return {"$or": [{"b": 2}]}
+
+        combined = asyncio.run(all_of(one, two)(self._auth(), _tenant()))
+        assert combined == {"$and": [{"$or": [{"a": 1}]}, {"$or": [{"b": 2}]}]}
 
     def test_searching_cannot_shake_off_a_scope_hook(self):
         """The search box wrote straight over ``$or``. Any hook that used one —

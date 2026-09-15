@@ -54,7 +54,12 @@ async def get_register(
     on: Annotated[date | None, Query(alias="date")] = None,
     session_key: str = "day",
 ):
-    from app.core.scoping import family_student_ids
+    from app.core.scoping import assert_may_open_section, family_student_ids
+
+    # A family opens it to read their own child's row; a teacher only opens
+    # sections they take this year.
+    if not (auth.student_id or auth.guardian_id):
+        await assert_may_open_section(auth, tenant, section_id)
 
     return await service.get_register(
         tenant, section_id=section_id, on=on or date.today(), session_key=session_key,
@@ -66,6 +71,9 @@ async def get_register(
 async def take_register(
     payload: TakeRegisterRequest, auth: Taker, tenant: TenantDep, request: Request
 ):
+    from app.core.scoping import assert_may_open_section
+
+    await assert_may_open_section(auth, tenant, payload.section_id)
     result = await service.take_register(
         tenant, auth,
         section_id=payload.section_id,

@@ -54,6 +54,106 @@ async def own_student_scope(auth: AuthContext, tenant: TenantContext) -> dict[st
     return {} if allowed is None else {"_id": {"$in": allowed}}
 
 
+#: Staff who are narrowed to what they actually teach.
+TEACHING_PORTALS = {"teacher"}
+
+
+async def teacher_section_ids(
+    auth: AuthContext, tenant: TenantContext
+) -> list[ObjectId] | None:
+    """The sections this teacher takes, this academic year — or ``None`` for
+    anyone who is not a class teacher at all.
+
+    Two ways in, because a school has two: the subject they are timetabled for,
+    and the section they are class teacher of. Both are recorded against an
+    academic year, which is the whole point — a teacher who takes Class 8 and
+    Class 11 this year has no business in Class 7's register, and next year,
+    when the allocation changes, the reach changes with it rather than
+    accumulating.
+    """
+    if auth.portal not in TEACHING_PORTALS or not auth.staff_id:
+        return None
+
+    year_id = tenant.year_for(auth)
+    year_filter: dict[str, Any] = {"academic_year_id": year_id} if year_id else {}
+
+    taught = await collection(C.SUBJECT_ASSIGNMENTS).distinct("section_id", {
+        "tenant_id": tenant.id, "staff_id": auth.staff_id,
+        "is_deleted": {"$ne": True}, **year_filter,
+    })
+    owned = await collection(C.SECTIONS).distinct("_id", {
+        "tenant_id": tenant.id, "class_teacher_id": auth.staff_id,
+        "is_deleted": {"$ne": True}, **year_filter,
+    })
+    return list({*taught, *owned})
+
+
+async def teacher_section_scope(
+    auth: AuthContext, tenant: TenantContext
+) -> dict[str, Any]:
+    """Narrow a collection that names sections in ``section_ids``."""
+    sections = await teacher_section_ids(auth, tenant)
+    if sections is None:
+        return {}
+    return {"section_ids": {"$in": sections}}
+
+
+async def teacher_own_sections_scope(
+    auth: AuthContext, tenant: TenantContext
+) -> dict[str, Any]:
+    """Narrow the sections collection itself, where the key is ``_id``.
+
+    So the class picker on every screen offers a teacher the three sections
+    they take rather than the school's twelve.
+    """
+    sections = await teacher_section_ids(auth, tenant)
+    if sections is None:
+        return {}
+    return {"_id": {"$in": sections}}
+
+
+async def teacher_student_scope(
+    auth: AuthContext, tenant: TenantContext
+) -> dict[str, Any]:
+    """Narrow the students collection to the ones this teacher actually takes."""
+    sections = await teacher_section_ids(auth, tenant)
+    if sections is None:
+        return {}
+    return {"current_section_id": {"$in": sections}}
+
+
+async def academic_year_scope(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
+    """Show one academic year at a time.
+
+    Staff read whichever year they have switched to and the current one by
+    default; a family always reads the current one, because a child is in one
+    year at a time. Rows that name no year stay visible in every year — a row
+    that does not say which year it belongs to belongs to all of them, and
+    hiding it would make a switch look like data loss.
+    """
+    year_id = tenant.year_for(auth)
+    if year_id is None:
+        return {}
+    return {"academic_year_id": {"$in": [year_id, None]}}
+
+
+def all_of(*hooks: Any) -> Any:
+    """Every hook has to hold.
+
+    Merged under ``$and`` rather than by updating one dict into another: two
+    hooks may each need ``$or`` — a class-or-section rule and a this-year-or-
+    undated rule both do — and the second would otherwise erase the first.
+    """
+
+    async def _combined(auth: AuthContext, tenant: TenantContext) -> dict[str, Any]:
+        parts = [part for hook in hooks if (part := await hook(auth, tenant))]
+        if not parts:
+            return {}
+        return parts[0] if len(parts) == 1 else {"$and": parts}
+
+    return _combined
+
+
 async def family_assignment_scope(
     auth: AuthContext, tenant: TenantContext
 ) -> dict[str, Any]:
@@ -86,6 +186,60 @@ async def family_assignment_scope(
             {"class_id": {"$in": class_ids}, "section_ids": {"$exists": False}},
         ],
     }
+
+
+async def assignment_reach_scope(
+    auth: AuthContext, tenant: TenantContext
+) -> dict[str, Any]:
+    """Who an assignment is visible to, from either end.
+
+    A family sees their own child's published work. A teacher sees the sections
+    they take this year plus anything they set themselves — the second clause
+    matters because a teacher who sets work and is then moved off the section
+    should still be able to finish marking it. Everyone else in the office sees
+    the institution's.
+    """
+    family = await family_assignment_scope(auth, tenant)
+    if family:
+        return family
+
+    sections = await teacher_section_ids(auth, tenant)
+    if sections is None:
+        return {}
+    if not sections:
+        # Timetabled for nothing this year: their own work, and no one else's.
+        return {"assigned_by": auth.staff_id}
+
+    class_ids = await collection(C.SECTIONS).distinct(
+        "class_id", {"_id": {"$in": sections}, "tenant_id": tenant.id}
+    )
+    return {
+        "$or": [
+            {"assigned_by": auth.staff_id},
+            {"section_ids": {"$in": sections}},
+            # Work set for a whole class names no sections at all.
+            {"class_id": {"$in": class_ids}, "section_ids": {"$in": [[], None]}},
+            {"class_id": {"$in": class_ids}, "section_ids": {"$exists": False}},
+        ]
+    }
+
+
+async def assert_may_open_section(
+    auth: AuthContext, tenant: TenantContext, section_id: str | ObjectId
+) -> ObjectId:
+    """Guard a route that takes a section in the path.
+
+    Narrowing a list is not enough when the next screen along takes an id: a
+    teacher who is not shown Class 7 should also not be able to open its
+    register by typing the id in.
+    """
+    from app.core.exceptions import Forbidden
+
+    oid_value = ObjectId(section_id) if not isinstance(section_id, ObjectId) else section_id
+    allowed = await teacher_section_ids(auth, tenant)
+    if allowed is not None and oid_value not in allowed:
+        raise Forbidden("You do not take that section this academic year")
+    return oid_value
 
 
 async def assert_not_family(auth: AuthContext) -> None:

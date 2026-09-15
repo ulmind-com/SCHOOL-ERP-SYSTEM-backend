@@ -101,6 +101,7 @@ def build_context(doc: dict[str, Any]) -> TenantContext:
         branding=doc.get("branding") or {},
         settings=doc.get("settings") or {},
         current_academic_year_id=doc.get("current_academic_year_id"),
+        active_academic_year_id=doc.get("current_academic_year_id"),
         address_line=_one_line_address(doc),
         contact_line=_one_line_contact(doc),
     )

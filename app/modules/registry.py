@@ -10,9 +10,12 @@ from fastapi import APIRouter
 
 from app.core.crud import Resource, build_crud_router
 from app.core.scoping import (
-    family_assignment_scope,
+    academic_year_scope,
+    all_of,
+    assignment_reach_scope,
     family_class_scope,
     student_row_scope,
+    teacher_own_sections_scope,
 )
 from app.db.mongo import C
 from app.models import academics as ac
@@ -56,6 +59,16 @@ async def with_class_names(items: list[dict], tenant) -> list[dict]:
     return items
 
 
+async def with_teacher_names(items: list[dict], tenant) -> list[dict]:
+    """Stamp each assignment with the name of the teacher who set it."""
+    from app.modules.lms.service import staff_names
+
+    names = await staff_names(tenant, [row.get("assigned_by") for row in items])
+    for row in items:
+        row["set_by"] = names.get(row.get("assigned_by"), "")
+    return items
+
+
 async def before_assignment_create(data: dict, auth, tenant, repo) -> dict:
     """Stamp who set the work and when.
 
@@ -85,12 +98,14 @@ RESOURCES: list[Resource] = [
         tags=["Academics"], search_fields=["name", "description"],
         filters=["type", "academic_year_id", "is_active", "attendance_required"],
         sortable=["start_date", "name"], default_sort_dir="asc",
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="terms", collection=C.TERMS, module="academic_years", model=ac.Term,
         tags=["Academics"], search_fields=["name"],
         filters=["academic_year_id", "type", "is_current"], sortable=["order", "start_date"],
         default_sort_dir="asc",
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="departments", collection=C.DEPARTMENTS, module="departments",
@@ -116,6 +131,7 @@ RESOURCES: list[Resource] = [
         filters=["class_id", "academic_year_id", "class_teacher_id", "is_active"],
         sortable=["name", "created_at"], default_sort_dir="asc",
         decorate=with_class_names,
+        scope_hook=all_of(teacher_own_sections_scope, academic_year_scope),
     ),
     Resource(
         name="subjects", collection=C.SUBJECTS, module="subjects", model=ac.Subject,
@@ -129,6 +145,7 @@ RESOURCES: list[Resource] = [
         name="subject-assignments", collection=C.SUBJECT_ASSIGNMENTS, module="subjects",
         model=ac.SubjectAssignment, label="Subject Assignment", tags=["Academics"],
         filters=["subject_id", "section_id", "staff_id", "academic_year_id"],
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="periods", collection=C.PERIODS, module="timetable", model=ac.Period,
@@ -142,13 +159,14 @@ RESOURCES: list[Resource] = [
         filters=["section_id", "class_id", "staff_id", "day_of_week", "academic_year_id",
                  "subject_id", "is_published"],
         sortable=["day_of_week", "start_time"], default_sort_dir="asc",
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="syllabus", collection=C.SYLLABUS, module="syllabus", model=ac.SyllabusUnit,
         label="Syllabus Unit", plural="Syllabus", tags=["Academics"],
         search_fields=["title"], filters=["subject_id", "class_id", "completed"],
         sortable=["order", "created_at"], default_sort_dir="asc",
-        scope_hook=family_class_scope,
+        scope_hook=all_of(family_class_scope, academic_year_scope),
     ),
     Resource(
         name="grade-scales", collection=C.GRADE_SCALES, module="exams", model=ac.GradeScale,
@@ -185,7 +203,8 @@ RESOURCES: list[Resource] = [
                  "submission_mode"],
         sortable=["due_date", "created_at"],
         before_create=before_assignment_create,
-        scope_hook=family_assignment_scope,
+        decorate=with_teacher_names,
+        scope_hook=all_of(assignment_reach_scope, academic_year_scope),
     ),
     Resource(
         name="materials", collection=C.LMS_MATERIALS, module="lms",
@@ -216,6 +235,7 @@ RESOURCES: list[Resource] = [
         model=fin.FeeStructure, label="Fee Structure", tags=["Finance"],
         search_fields=["name"], filters=["academic_year_id", "is_active", "program_id"],
         sortable=["name", "created_at"],
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="discounts", collection=C.DISCOUNTS, module="scholarships", model=fin.Discount,
@@ -262,6 +282,7 @@ RESOURCES: list[Resource] = [
         search_fields=["name", "instructions"],
         filters=["academic_year_id", "term_id", "type", "status"],
         sortable=["start_date", "name", "created_at"], default_sort_dir="desc",
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="marks", collection=C.MARKS, module="exams", model=ops.Mark,
@@ -275,13 +296,14 @@ RESOURCES: list[Resource] = [
         model=ops.ExamSchedule, label="Exam Schedule", plural="Exam Schedules",
         tags=["Exams"], filters=["exam_id", "subject_id", "class_id"],
         sortable=["date"], default_sort_dir="asc",
+        scope_hook=academic_year_scope,
     ),
     Resource(
         name="report-cards", collection=C.REPORT_CARDS, module="results",
         model=ops.ReportCard, label="Report Card", plural="Report Cards",
         tags=["Results"], filters=["student_id", "exam_id", "class_id", "section_id", "result"],
         sortable=["created_at"], read_only=True,
-        scope_hook=student_row_scope,
+        scope_hook=all_of(student_row_scope, academic_year_scope),
     ),
     Resource(
         name="appraisals", collection=C.APPRAISALS, module="appraisals", model=hr.Appraisal,
@@ -322,7 +344,7 @@ RESOURCES: list[Resource] = [
         name="transport/allocations", collection=C.TRANSPORT_ALLOCATIONS, module="transport",
         model=fac.TransportAllocation, label="Allocation", plural="Transport Allocations",
         tags=["Transport"], filters=["student_id", "route_id", "status", "academic_year_id"],
-        scope_hook=student_row_scope,
+        scope_hook=all_of(student_row_scope, academic_year_scope),
     ),
     Resource(
         name="hostel/blocks", collection=C.HOSTELS, module="hostel", model=fac.Hostel,
@@ -340,7 +362,7 @@ RESOURCES: list[Resource] = [
         name="hostel/allocations", collection=C.HOSTEL_ALLOCATIONS, module="hostel",
         model=fac.HostelAllocation, label="Allocation", plural="Hostel Allocations",
         tags=["Hostel"], filters=["student_id", "hostel_id", "room_id", "status"],
-        scope_hook=student_row_scope,
+        scope_hook=all_of(student_row_scope, academic_year_scope),
     ),
     Resource(
         name="inventory/items", collection=C.INVENTORY_ITEMS, module="inventory",

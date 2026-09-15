@@ -51,6 +51,11 @@ class TenantContext:
     branding: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     current_academic_year_id: ObjectId | None = None
+    #: The year this request is reading, which is the current one unless a
+    #: member of staff has switched. Families never get to switch: a child is
+    #: in one year at a time and last year's marks are not their business to
+    #: browse from the portal.
+    active_academic_year_id: ObjectId | None = None
     #: Carried so printed documents can render a real letterhead without a
     #: second database read on every receipt.
     address_line: str = ""
@@ -76,6 +81,12 @@ class TenantContext:
         if self.is_dedicated:
             return True
         return key in CORE_MODULE_KEYS or key in self.enabled_modules
+
+    def year_for(self, auth: AuthContext) -> ObjectId | None:
+        """Which academic year this caller reads."""
+        if auth.portal in {"student", "parent"} or auth.student_id or auth.guardian_id:
+            return self.current_academic_year_id
+        return self.active_academic_year_id or self.current_academic_year_id
 
     def storage_path(self) -> str:
         """ImageKit folder — one per institution, so a dedicated school's media

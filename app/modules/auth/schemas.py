@@ -67,6 +67,12 @@ class SessionInstitution(AppModel):
     limits: dict = Field(default_factory=dict)
     usage: dict = Field(default_factory=dict)
     current_academic_year: dict | None = None
+    #: Every year this institution has run, newest first, so staff can move
+    #: between them without a second request.
+    academic_years: list[dict] = Field(default_factory=list)
+    active_academic_year_id: str | None = None
+    #: Families are pinned to the current year; only staff get the switcher.
+    can_switch_academic_year: bool = False
     onboarding_completed: bool = True
 
 

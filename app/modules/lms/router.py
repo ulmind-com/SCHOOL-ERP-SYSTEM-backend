@@ -148,6 +148,7 @@ async def submissions(
     homework, which is what ``/homework/mine`` answers.
     """
     await assert_not_family(auth)
+    await service.assert_teacher_reaches(tenant, auth, assignment_id)
     return await service.assignment_submissions(tenant, assignment_id)
 
 
